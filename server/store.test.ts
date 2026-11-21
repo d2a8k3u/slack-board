@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { Proposal, SlackHit } from "../core/types.ts";
-import { BoardStore, STALE_CLAIM_MS } from "./store.ts";
+import { ACT_STALE_MS, BoardStore, STALE_CLAIM_MS } from "./store.ts";
 
 const ME = "U_ME";
 const PROJECTS = ["PROJ"];
@@ -392,6 +392,195 @@ test(
     const [card] = store.cards();
     assert.equal(card?.error, "Step 2 failed: invalid_name");
     assert.deepEqual(card?.proposal?.steps, [{ type: "slack_reaction", emoji: "eyes" }]);
+  }),
+);
+
+test(
+  "keeps each prompt and Claude's answer as the card's action history, with the steps Claude proposes",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    const proposal: Proposal = {
+      summary: "Comment",
+      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+    };
+
+    assert.equal(store.act("D01", "Find the related ticket", NOW), true);
+    assert.deepEqual(store.cards()[0]?.pending, { kind: "act", status: "pending" });
+    const run = store.claim("worker", NOW);
+    assert.deepEqual(
+      { kind: run?.kind, input: run?.input },
+      {
+        kind: "act",
+        input: { text: "Find the related ticket" },
+      },
+    );
+    store.finish(
+      run?.id ?? 0,
+      { ok: true, reply: "PROJ-1 is the one.", tools: ["searchJiraIssuesUsingJql"], proposal },
+      LATER(1000),
+    );
+
+    const [card] = store.cards();
+    assert.deepEqual(card?.actions, [
+      {
+        author: "me",
+        text: "Find the related ticket",
+        at: NOW.toISOString(),
+        tools: [],
+        isFailed: false,
+      },
+      {
+        author: "claude",
+        text: "PROJ-1 is the one.",
+        at: LATER(1000).toISOString(),
+        tools: ["searchJiraIssuesUsingJql"],
+        isFailed: false,
+      },
+    ]);
+    assert.deepEqual(card?.proposal, proposal);
+    assert.equal(card?.pending, null);
+  }),
+);
+
+test(
+  "shows a failed prompt and refused steps in the action history",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    store.act("D01", "Move it", NOW);
+    store.finish(
+      store.claim("worker", NOW)?.id ?? 0,
+      {
+        ok: true,
+        reply: "Here is the plan.",
+        tools: [],
+        proposalError: "x is not an allowed step",
+      },
+      NOW,
+    );
+    store.act("D01", "Try again", NOW);
+    store.finish(
+      store.claim("worker", NOW)?.id ?? 0,
+      { ok: false, error: "Claude did not finish" },
+      NOW,
+    );
+
+    assert.deepEqual(
+      store.cards()[0]?.actions.map(({ author, text, isFailed }) => ({ author, text, isFailed })),
+      [
+        { author: "me", text: "Move it", isFailed: false },
+        { author: "claude", text: "Here is the plan.", isFailed: false },
+        {
+          author: "claude",
+          text: "The board refused the steps Claude proposed: x is not an allowed step",
+          isFailed: true,
+        },
+        { author: "me", text: "Try again", isFailed: false },
+        { author: "claude", text: "Claude did not finish", isFailed: true },
+      ],
+    );
+    assert.equal(store.cards()[0]?.proposal, null);
+  }),
+);
+
+test(
+  "keeps the card open after approved steps that do not answer the conversation, and logs them",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    store.approve(
+      "D01",
+      {
+        summary: "Move PROJ-1 to review",
+        steps: [
+          { type: "jira_transition", issueKey: "PROJ-1", transitionId: "31", status: "Review" },
+        ],
+      },
+      NOW,
+    );
+    store.finish(store.claim("worker", NOW)?.id ?? 0, { ok: true }, NOW);
+
+    const [card] = store.cards();
+    assert.equal(card?.proposal, null);
+    assert.deepEqual(
+      card?.actions.map(({ author, text }) => ({ author, text })),
+      [{ author: "claude", text: "Done: Move PROJ-1 to review" }],
+    );
+  }),
+);
+
+test(
+  "gives a running prompt to another worker only after the prompt time limit",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    store.act("D01", "Find it", NOW);
+    const claimed = store.claim("dead", NOW);
+    assert.equal(claimed?.kind, "act");
+
+    assert.equal(store.claim("alive", LATER(STALE_CLAIM_MS + 1)), null);
+    assert.equal(store.claim("alive", LATER(ACT_STALE_MS)), null);
+    assert.equal(store.claim("alive", LATER(ACT_STALE_MS + 1))?.id, claimed?.id);
+  }),
+);
+
+test(
+  "reads the conversation from Slack once per new message and marks my messages in it",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+
+    assert.equal(store.requestHistory("D01", NOW), true);
+    assert.equal(store.requestHistory("D01", NOW), false);
+    const read = store.claim("worker", NOW);
+    assert.deepEqual(
+      { kind: read?.kind, input: read?.input },
+      {
+        kind: "history",
+        input: { key: "D01", channelId: "D01", threadTs: null, latestTs: "1795000000.000100" },
+      },
+    );
+    store.finish(
+      read?.id ?? 0,
+      {
+        ok: true,
+        history: [
+          { ts: "1794999000.000000", authorId: ME, authorName: "Me", text: "Shipped." },
+          { ts: "1795000000.000100", authorId: "U_ANA", authorName: "Ana", text: "no ticket" },
+        ],
+      },
+      NOW,
+    );
+
+    assert.deepEqual(
+      store
+        .cards()[0]
+        ?.conversation.map(({ text, isMine, startsNew }) => ({ text, isMine, startsNew })),
+      [
+        { text: "Shipped.", isMine: true, startsNew: false },
+        { text: "no ticket", isMine: false, startsNew: true },
+      ],
+    );
+    assert.equal(store.requestHistory("D01", NOW), false);
+    ingest(store, [hit({ text: "no ticket" }), hit({ ts: "1795000001.000000", text: "hello?" })]);
+    assert.equal(store.requestHistory("D01", NOW), true);
+  }),
+);
+
+test(
+  "says why the conversation could not be read and shows the waiting messages instead",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    store.requestHistory("D01", NOW);
+    store.finish(
+      store.claim("worker", NOW)?.id ?? 0,
+      { ok: false, error: "channel_not_found" },
+      NOW,
+    );
+
+    const [card] = store.cards();
+    assert.equal(card?.historyError, "channel_not_found");
+    assert.deepEqual(
+      card?.conversation.map((message) => message.text),
+      ["no ticket"],
+    );
+    assert.equal(store.requestHistory("D01", NOW), true);
   }),
 );
 

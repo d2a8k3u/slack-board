@@ -169,6 +169,23 @@ const routesFor = ({ store, projectKeys, polish }: BoardServerOptions): Route[] 
     },
     {
       method: "POST",
+      pattern: /^\/api\/cards\/([^/]+)\/act$/,
+      handle: async ([key = ""], body) => {
+        const text = boundedText(record(await body()).text, "text", MAX_INPUT_CHARS);
+        cardExists(key);
+        return queued(store.act(key, text, new Date()));
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cards\/([^/]+)\/history$/,
+      handle: async ([key = ""]) => {
+        cardExists(key);
+        return { status: store.requestHistory(key, new Date()) ? 202 : 204 };
+      },
+    },
+    {
+      method: "POST",
       pattern: /^\/api\/cards\/([^/]+)\/approve$/,
       handle: async ([key = ""], body) => {
         const check = checkProposal(record(await body()).proposal, projectKeys);

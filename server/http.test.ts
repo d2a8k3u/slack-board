@@ -248,6 +248,42 @@ test(
 );
 
 test(
+  "runs my prompt on a card, shows it in the card's history at once and refuses a second one while it runs",
+  withBoard(async (port, token, store) => {
+    seedCard(store);
+    const auth = { "x-board-token": token };
+    const act = (text: string) =>
+      send(port, "/api/cards/D01/act", { method: "POST", headers: auth, body: { text } });
+
+    assert.equal((await act("Find the related ticket")).status, 202);
+    assert.equal((await act("And another")).status, 409);
+
+    const state = JSON.parse((await send(port, "/api/state", { headers: auth })).body);
+    assert.deepEqual(
+      state.cards[0].actions.map((turn: { text: string }) => turn.text),
+      ["Find the related ticket"],
+    );
+    assert.equal(store.claim("worker", new Date())?.kind, "act");
+  }),
+);
+
+test(
+  "asks Slack for a card's conversation only when the card has news since the last read",
+  withBoard(async (port, token, store) => {
+    seedCard(store);
+    const history = (key: string) =>
+      send(port, `/api/cards/${key}/history`, {
+        method: "POST",
+        headers: { "x-board-token": token },
+      });
+
+    assert.equal((await history("D01")).status, 202);
+    assert.equal((await history("D01")).status, 204);
+    assert.equal((await history("D99")).status, 404);
+  }),
+);
+
+test(
   "queues exactly the approved steps, and refuses steps outside the allowed list",
   withBoard(async (port, token, store) => {
     store.ingest({

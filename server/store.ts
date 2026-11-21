@@ -1,8 +1,11 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { conversationView } from "../core/conversation.ts";
 import { dropAnswered, mergeHits, peopleFromHits } from "../core/inbox.ts";
+import { answersConversation } from "../core/steps.ts";
 import { ticketKeys } from "../core/tickets.ts";
 import type {
+  ActionTurn,
   BoardCard,
   CardKind,
   CardMessage,
@@ -10,6 +13,7 @@ import type {
   ClaimedRequest,
   ConversationKind,
   FinishOutcome,
+  HistoryMessage,
   InboxCard,
   LookupState,
   Priority,
@@ -26,6 +30,7 @@ import type {
 } from "../core/types.ts";
 
 export const STALE_CLAIM_MS = 120_000;
+export const ACT_STALE_MS = 11 * 60_000;
 const SYNC_OVERLAP_MS = 10 * 60_000;
 const IGNORED_KEEP_MS = 30 * 24 * 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
@@ -61,6 +66,13 @@ CREATE TABLE IF NOT EXISTS requests (
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS card_context (
+  key TEXT PRIMARY KEY,
+  actions TEXT NOT NULL DEFAULT '[]',
+  history TEXT,
+  history_ts TEXT,
+  history_error TEXT
+);
 `;
 
 const TICKETS_TABLE = `
@@ -99,6 +111,15 @@ type CardRow = {
   priority_reason: string | null;
   priority_ts: string | null;
 };
+
+type ContextRow = {
+  actions: string | null;
+  history: string | null;
+  history_ts: string | null;
+  history_error: string | null;
+};
+
+type HistoryInput = { key: string; channelId: string; threadTs: string | null; latestTs: string };
 
 type RequestRow = {
   id: number;
@@ -305,14 +326,19 @@ export class BoardStore {
       this.#forgetUnusedTickets();
       this.#rememberPeople(peopleFromHits(sync.hits, sync.me), sync.syncedAt);
       this.#setMeta("last_sync_at", iso(sync.syncedAt));
+      this.#setMeta("me", sync.me);
       this.#db.prepare(`DELETE FROM meta WHERE key = 'last_sync_error'`).run();
     });
   }
 
   cards(): BoardCard[] {
     const rows = this.#db
-      .prepare("SELECT * FROM cards ORDER BY updated_at DESC")
-      .all() as CardRow[];
+      .prepare(
+        `SELECT cards.*, card_context.actions, card_context.history, card_context.history_error
+         FROM cards LEFT JOIN card_context ON card_context.key = cards.key ORDER BY updated_at DESC`,
+      )
+      .all() as (CardRow & Omit<ContextRow, "history_ts">)[];
+    const me = this.#meta<string>("me");
     const tickets = new Map(
       (
         this.#db
@@ -335,6 +361,13 @@ export class BoardStore {
       title: row.title,
       target: targetOf(row),
       messages: messagesOf(row),
+      actions: row.actions === null ? [] : (JSON.parse(row.actions) as ActionTurn[]),
+      conversation: conversationView(
+        row.history === null ? [] : (JSON.parse(row.history) as HistoryMessage[]),
+        messagesOf(row),
+        me,
+      ),
+      historyError: row.history_error,
       tickets: (JSON.parse(row.ticket_keys) as string[])
         .map((key) => tickets.get(key))
         .filter((ticket) => ticket !== undefined),
@@ -345,6 +378,35 @@ export class BoardStore {
       priority: row.priority,
       priorityReason: row.priority_reason,
     }));
+  }
+
+  act(key: string, text: string, now: Date): boolean {
+    return this.#transaction(() => {
+      if (!this.#enqueue("act", key, { text }, now)) return false;
+      this.#appendTurn(key, { author: "me", text, at: iso(now), tools: [], isFailed: false });
+      return true;
+    });
+  }
+
+  requestHistory(key: string, now: Date): boolean {
+    return this.#transaction(() => {
+      const row = this.#db.prepare("SELECT * FROM cards WHERE key = ?").get(key) as
+        | CardRow
+        | undefined;
+      const latestTs = row === undefined ? null : lastTs(messagesOf(row));
+      if (row === undefined || row.kind === "compose" || latestTs === null) return false;
+      const context = this.#db
+        .prepare("SELECT history_ts, history_error FROM card_context WHERE key = ?")
+        .get(key) as Pick<ContextRow, "history_ts" | "history_error"> | undefined;
+      if (context?.history_ts === latestTs && context.history_error === null) return false;
+      const input: HistoryInput = {
+        key,
+        channelId: row.channel_id,
+        threadTs: row.thread_ts,
+        latestTs,
+      };
+      return this.#enqueue("history", null, input, now);
+    });
   }
 
   card(key: string): BoardCard | null {
@@ -444,13 +506,16 @@ export class BoardStore {
 
   claim(worker: string, now: Date): ClaimedRequest | null {
     const row = this.#transaction(() => {
-      const staleBefore = iso(new Date(now.getTime() - STALE_CLAIM_MS));
+      const staleBefore = (ms: number) => iso(new Date(now.getTime() - ms));
       const next = this.#db
         .prepare(
-          `SELECT id, kind, card_key, input, status FROM requests WHERE status = 'pending' OR (status = 'working' AND updated_at < ?)
+          `SELECT id, kind, card_key, input, status FROM requests
+           WHERE status = 'pending' OR (status = 'working' AND updated_at < CASE kind WHEN 'act' THEN ? ELSE ? END)
            ORDER BY kind IN (${BACKGROUND_KINDS.map(() => "?").join(", ")}), id LIMIT 1`,
         )
-        .get(staleBefore, ...BACKGROUND_KINDS) as RequestRow | undefined;
+        .get(staleBefore(ACT_STALE_MS), staleBefore(STALE_CLAIM_MS), ...BACKGROUND_KINDS) as
+        | RequestRow
+        | undefined;
       if (next === undefined) return null;
       this.#db
         .prepare(
@@ -496,8 +561,14 @@ export class BoardStore {
             .prepare("UPDATE cards SET error = ? WHERE key = ?")
             .run(outcome.error, request.card_key);
         return;
+      case "act":
+        this.#applyAnswer(request.card_key ?? "", outcome, now);
+        return;
+      case "history":
+        this.#applyHistory(JSON.parse(request.input) as HistoryInput, outcome);
+        return;
       case "execute":
-        if (outcome.ok) this.#closeCard(request.card_key ?? "", now);
+        if (outcome.ok) this.#applyRun(request, now);
         else
           this.#db
             .prepare("UPDATE cards SET error = ?, proposal = COALESCE(?, proposal) WHERE key = ?")
@@ -552,6 +623,72 @@ export class BoardStore {
           );
         return;
     }
+  }
+
+  #applyAnswer(key: string, outcome: FinishOutcome, now: Date): void {
+    const claude = (text: string, isFailed: boolean, tools: string[] = []): ActionTurn => ({
+      author: "claude",
+      text,
+      at: iso(now),
+      tools,
+      isFailed,
+    });
+    if (!outcome.ok) {
+      this.#appendTurn(key, claude(outcome.error, true));
+      return;
+    }
+    this.#appendTurn(key, claude(outcome.reply ?? "", false, outcome.tools));
+    if (outcome.proposal !== undefined)
+      this.#db
+        .prepare("UPDATE cards SET proposal = ?, error = NULL WHERE key = ?")
+        .run(JSON.stringify(outcome.proposal), key);
+    if (outcome.proposalError !== undefined)
+      this.#appendTurn(
+        key,
+        claude(`The board refused the steps Claude proposed: ${outcome.proposalError}`, true),
+      );
+  }
+
+  #applyHistory(input: HistoryInput, outcome: FinishOutcome): void {
+    if (outcome.ok)
+      this.#saveContext(input.key, {
+        history: JSON.stringify(outcome.history ?? []),
+        history_ts: input.latestTs,
+        history_error: null,
+      });
+    else this.#saveContext(input.key, { history_error: outcome.error });
+  }
+
+  #applyRun(request: RequestRow, now: Date): void {
+    const key = request.card_key ?? "";
+    const { proposal } = JSON.parse(request.input) as { proposal: Proposal };
+    if (answersConversation(proposal.steps)) {
+      this.#closeCard(key, now);
+      return;
+    }
+    this.#db.prepare("UPDATE cards SET proposal = NULL, error = NULL WHERE key = ?").run(key);
+    this.#appendTurn(key, {
+      author: "claude",
+      text: `Done: ${proposal.summary}`,
+      at: iso(now),
+      tools: [],
+      isFailed: false,
+    });
+  }
+
+  #appendTurn(key: string, turn: ActionTurn): void {
+    const row = this.#db.prepare("SELECT actions FROM card_context WHERE key = ?").get(key) as
+      | { actions: string }
+      | undefined;
+    const actions = row === undefined ? [] : (JSON.parse(row.actions) as ActionTurn[]);
+    this.#saveContext(key, { actions: JSON.stringify([...actions, turn]) });
+  }
+
+  #saveContext(key: string, fields: Partial<Record<keyof ContextRow, string | null>>): void {
+    if (this.#db.prepare("SELECT key FROM cards WHERE key = ?").get(key) === undefined) return;
+    this.#db.prepare("INSERT OR IGNORE INTO card_context (key) VALUES (?)").run(key);
+    for (const [column, value] of Object.entries(fields))
+      this.#db.prepare(`UPDATE card_context SET ${column} = ? WHERE key = ?`).run(value, key);
   }
 
   #enqueue(kind: RequestKind, cardKey: string | null, input: unknown, now: Date): boolean {
@@ -655,6 +792,7 @@ export class BoardStore {
 
   #deleteCard(key: string): void {
     this.#db.prepare("DELETE FROM cards WHERE key = ?").run(key);
+    this.#db.prepare("DELETE FROM card_context WHERE key = ?").run(key);
     this.#db.prepare("DELETE FROM requests WHERE card_key = ?").run(key);
   }
 
