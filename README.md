@@ -14,7 +14,7 @@ Prefer your own words? Turn off polishing in the settings and your reply goes ou
 
 The small talk at the bottom can wait until lunch.
 
-![A card opened in dark mode: the conversation, the ticket, and Claude's proposal waiting for approval](docs/images/card-detail-dark.png)
+![A card opened in dark mode: a prompt and Claude's answer in Actions with steps waiting for approval, and the conversation with your own message on the right](docs/images/card-detail-dark.png)
 
 ## What it does
 
