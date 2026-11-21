@@ -23,34 +23,41 @@ Cards are sorted by priority, newest first within one priority. The bar above th
 
 A red dot marks a card with messages you have not opened yet.
 
-A card leaves the board when you answer in Slack, approve a proposal, or press Ignore (the × on the card or the button in the opened card). An ignored conversation comes back only when someone writes in it again.
+A card leaves the board when you answer in Slack, when a reply or reaction you approved goes out, or when you press Ignore (the × on the card or the button in the opened card). Steps that only change tickets or other tools keep the card open. An ignored conversation comes back only when someone writes in it again.
 
 A mention in a message shows the person's name. Click it to start a new message to them.
 
+## Read the conversation
+
+Open a card. Conversation shows the whole thread or DM as Slack has it, up to its last 30 messages: other people on the left, your own messages on the right, and a "New since your last reply" line where the messages waiting for you start. The board reads it from Slack when you open the card and again when a new message arrives. Until that read is done, you see only the messages waiting for you.
+
 ## Reply
 
-1. Open a card. The conversation, any Jira ticket it mentions and the reply box are in the window that opens.
-2. Write what you want to say in the reply box, in any language and as roughly as you like, then press Draft or Ctrl+Enter. An emoji alone becomes a reaction; the quick reaction buttons do the same in one click.
-3. Claude shows its proposal: the reply in your voice and in the conversation's language, plus any other steps. Edit the reply text if you want.
-4. Press Approve and send. The steps run in order. If one fails, the card says which, and only the steps that did not run stay in the proposal, so approving again never sends anything twice.
+1. Write what you want to say in the reply box, in any language and as roughly as you like.
+2. Press Draft or Ctrl+Enter. Claude shows its proposal: the reply in your voice and in the conversation's language, plus any other steps. Edit the reply text if you want.
+3. Press Approve and send. The steps run in order. If one fails, the card says which, and only the steps that did not run stay in the proposal, so approving again never sends anything twice.
 
-Press Discard to drop a proposal and write a new note.
+Press Send as written to send your text exactly as you typed it, without Claude. The React now buttons put that reaction on the latest message at once. Press Discard to drop a proposal and write a new note.
 
-With `polish_replies` turned off in the [settings](settings.md), the button says Send and your text goes out exactly as written, with no proposal in between.
+With `polish_replies` turned off in the [settings](settings.md), Draft and Send as written become one Send button and your text always goes out exactly as written.
 
 ## Reply in a thread
 
-Click any message in the conversation. A box opens under it: write your note and press Draft thread reply. The reply goes into that message's thread, and a reaction goes on that message.
+Click any message in the conversation, yours included. A box opens under it: press Draft thread reply to have Claude write it, or Send as written to send your text as it is. The reply goes into that message's thread, and a reaction goes on that message.
 
-## Act on a ticket
+## Ask Claude about a conversation
 
-Press Action in the card's header and write an instruction, for example "move PROJ-123 to review and comment that the fix is on staging". Claude turns it into Jira steps (comment, status change, assignee, summary, labels, priority) and Slack steps, and you approve them like a reply.
+Open Actions at the top of the card and write a prompt the way you would in Claude Code, for example "find the ticket related to the one in this message" or "move PROJ-123 to review and comment that the fix is on staging". Press Run or Ctrl+Enter.
+
+Claude works on it with the conversation, the tickets on the card and the earlier prompts, using the claude.ai connectors you have connected. It answers in Actions and names the tools it read from. Tools that only read run right away. Anything that would change something (a Slack message, a Jira comment, a page in another tool) comes back as steps in Claude's proposal, and nothing runs until you approve them. A step that calls another connector's tool shows the exact input it will send.
+
+Your prompts and Claude's answers stay on the card until it leaves the board.
 
 Ticket details (status, assignee, priority, last update) load on their own. Press Summarize with Claude when you want Claude to read the ticket and its latest comments; Summarize again refreshes it.
 
 ## Start a new message
 
-Press New message, type a name or channel, and pick one. People and channels from your conversations and earlier searches show instantly; a Slack search adds the rest. A new card opens for that person or channel: write, draft, approve.
+Press New message, type a name or channel, and pick one. People and channels from your conversations and earlier searches show instantly; a Slack search adds the rest. A long list scrolls, and the arrow keys move through it. A new card opens for that person or channel: write, draft, approve.
 
 ## Sync
 
