@@ -392,6 +392,7 @@ test(
     const [card] = store.cards();
     assert.equal(card?.error, "Step 2 failed: invalid_name");
     assert.deepEqual(card?.proposal?.steps, [{ type: "slack_reaction", emoji: "eyes" }]);
+    assert.equal(card?.approveCloses, true);
   }),
 );
 
@@ -438,6 +439,7 @@ test(
       },
     ]);
     assert.deepEqual(card?.proposal, proposal);
+    assert.equal(card?.approveCloses, false);
     assert.equal(card?.pending, null);
   }),
 );

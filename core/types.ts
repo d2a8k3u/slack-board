@@ -130,6 +130,7 @@ export type BoardCard = {
   messages: CardMessage[];
   tickets: TicketState[];
   proposal: Proposal | null;
+  approveCloses: boolean;
   pending: { kind: RequestKind; status: RequestStatus } | null;
   error: string | null;
   updatedAt: string;

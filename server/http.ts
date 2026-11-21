@@ -106,7 +106,10 @@ const routesFor = ({ store, projectKeys, polish }: BoardServerOptions): Route[] 
     if (replyToTs === undefined || replyToTs === null) return null;
     const card = store.card(key);
     if (card === null) return refuse(404, "This card is gone");
-    if (typeof replyToTs !== "string" || !card.messages.some((message) => message.ts === replyToTs))
+    if (
+      typeof replyToTs !== "string" ||
+      !card.conversation.some((message) => message.ts === replyToTs)
+    )
       return refuse(400, "You can only reply in the thread of a message on this card");
     return replyToTs;
   };
