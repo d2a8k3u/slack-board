@@ -70,7 +70,10 @@ const UNREACHABLE_MESSAGE =
 const UNREADABLE_MESSAGE = "The board server sent an answer the board cannot read.";
 const BUSY_MESSAGE = "Claude is still working on this card";
 const EMPTY_COMPOSER_MESSAGE = "Write a reply, an emoji or an instruction first.";
-const EMPTY_ACTION_MESSAGE = "Tell Claude what to do first.";
+const EMPTY_ACTION_MESSAGE = "Write a prompt first.";
+const ACTIONS_INTRO =
+  "Write a prompt the way you would in Claude Code. Claude works on it with this conversation and answers here.";
+const HISTORY_ERROR_PREFIX = "Earlier messages could not be loaded from Slack: ";
 const EMPTY_THREAD_MESSAGE = "Write your reply first.";
 const ICON_SHAPES = {
   external: { width: 2, shapes: [["path", { d: "M14 5h5v5M19 5l-8 8M18 14v5H5V6h5" }]] },
@@ -91,6 +94,18 @@ const ICON_SHAPES = {
     ],
   },
   check: { width: 2.4, shapes: [["path", { d: "M5 12l5 5L20 7" }]] },
+  send: { width: 2, shapes: [["path", { d: "M4 12l16-8-6 16-3-7z" }]] },
+  spark: {
+    width: 2.2,
+    shapes: [
+      [
+        "path",
+        {
+          d: "M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8",
+        },
+      ],
+    ],
+  },
   chevron: { width: 2.4, shapes: [["path", { d: "M6 9l6 6 6-6" }]] },
   remove: { width: 3, shapes: [["path", { d: "M6 6l12 12M18 6L6 18" }]] },
 };
@@ -232,7 +247,7 @@ const ui = {
   sortDir: SORTS.priority.initial,
   openKey: null,
   selectedKey: null,
-  actionOpen: false,
+  actionsOpen: false,
   replyToTs: null,
   pendingOpenKey: null,
 };
@@ -830,6 +845,8 @@ function stateChanges(previous, next) {
       return [`Failed: ${card.title}. ${card.error}`];
     if (card.proposal !== null && earlier.proposal === null)
       return [`Proposal ready: ${card.title}`];
+    if (card.actions.length > earlier.actions.length && card.actions.at(-1)?.author === "claude")
+      return [`Claude answered: ${card.title}`];
     return [];
   });
   return [...sent.map((card) => `Sent: ${card.title}`), ...changed];
@@ -931,39 +948,47 @@ function deliver(key, text, options) {
   return board.polish ? propose(key, text, options) : sendAsWritten(key, text, options);
 }
 
-async function submitComposer(key) {
+async function submitComposer(key, submit = deliver) {
   const field = detail?.composerField;
   const text = field?.value.trim() ?? "";
   const scope = scopeOf("propose", key);
   if (text === "") return rejectSubmit(scope, EMPTY_COMPOSER_MESSAGE, field);
-  if (!(await deliver(key, text, { scope }))) return;
+  if (!(await submit(key, text, { scope }))) return;
   memory.drafts.delete(key);
   if (detail?.key === key) detail.composerField.value = "";
 }
 
 function sendReaction(key, reaction) {
-  void deliver(key, reaction, { scope: scopeOf("propose", key) });
+  void sendAsWritten(key, reaction, { scope: scopeOf("propose", key) });
 }
 
-async function planAction(key) {
+async function runPrompt(key) {
   const field = detail?.actionField;
   const text = field?.value.trim() ?? "";
   const scope = scopeOf("action", key);
   if (text === "") return rejectSubmit(scope, EMPTY_ACTION_MESSAGE, field);
-  if (!(await propose(key, text, { scope }))) return;
+  if (isCardBusy(key)) return rejectSubmit(scope, BUSY_MESSAGE, null);
+  const result = await runAction(scope, () => api("POST", `${cardPath(key)}/act`, { text }), {
+    conflictMessage: BUSY_MESSAGE,
+    onSuccess: () => {
+      memory.notes.delete(key);
+      announce(["Claude is working on your prompt"]);
+    },
+  });
+  if (!result.ok) return;
   memory.actionDrafts.delete(key);
-  if (detail?.key !== key) return;
-  detail.actionField.value = "";
-  ui.actionOpen = false;
-  render();
-  detail.actionButton.focus();
+  if (detail?.key === key) detail.actionField.value = "";
 }
 
-async function sendThreadReply(key, ts, field) {
+function requestHistory(key) {
+  void runAction(scopeOf("history", key), () => api("POST", `${cardPath(key)}/history`));
+}
+
+async function sendThreadReply(key, ts, field, submit = deliver) {
   const text = field.value.trim();
   const scope = scopeOf("thread", threadDraftKey(key, ts));
   if (text === "") return rejectSubmit(scope, EMPTY_THREAD_MESSAGE, field);
-  if (!(await deliver(key, text, { scope, replyToTs: ts }))) return;
+  if (!(await submit(key, text, { scope, replyToTs: ts }))) return;
   memory.threadDrafts.delete(threadDraftKey(key, ts));
   if (detail?.key !== key || ui.replyToTs !== ts) return;
   ui.replyToTs = null;
@@ -1040,7 +1065,7 @@ function openCard(key, focusTarget = "heading") {
   ui.filtersOpen = false;
   ui.openKey = key;
   ui.selectedKey = key;
-  ui.actionOpen = false;
+  ui.actionsOpen = false;
   ui.replyToTs = null;
   detail = buildDetail(card);
   dom.detailDialog.replaceChildren(detail.root);
@@ -1063,7 +1088,7 @@ function finishDetailClose() {
   if (detail === null) return;
   const key = ui.openKey;
   ui.openKey = null;
-  ui.actionOpen = false;
+  ui.actionsOpen = false;
   ui.replyToTs = null;
   detail = null;
   dom.detailDialog.replaceChildren();
@@ -1071,11 +1096,17 @@ function finishDetailClose() {
   if (key === null || !focusByKey(dom.cardSections, scopeOf("card", key))) dom.listHeading.focus();
 }
 
-function toggleAction() {
-  ui.actionOpen = !ui.actionOpen;
+function toggleActions() {
+  ui.actionsOpen = !ui.actionsOpen;
   render();
-  if (ui.actionOpen) detail.actionField.focus();
-  else detail.actionButton.focus();
+  if (ui.actionsOpen) detail.actionField.focus();
+}
+
+function focusProposal() {
+  const approve = detail?.proposalControls?.approve;
+  if (approve === undefined) return;
+  approve.scrollIntoView({ block: "center" });
+  approve.focus();
 }
 
 function toggleReply(ts) {
@@ -1650,18 +1681,6 @@ function buildDetail(card) {
     el("span", { class: "sr-only", text: NEW_TAB_HINT }),
     icon("external", 14),
   );
-  refs.actionButton = el(
-    "button",
-    {
-      type: "button",
-      class: "sb-chip button action-toggle",
-      "aria-expanded": "false",
-      "aria-controls": "action-panel",
-      onclick: toggleAction,
-    },
-    icon("bolt"),
-    "Action",
-  );
   refs.ignoreButton = el(
     "button",
     {
@@ -1678,7 +1697,6 @@ function buildDetail(card) {
     refs.avatarSlot,
     el("div", { class: "detail-id" }, refs.heading, refs.place, refs.priority),
     refs.slackLink,
-    refs.actionButton,
     refs.ignoreButton,
     el(
       "button",
@@ -1687,7 +1705,7 @@ function buildDetail(card) {
     ),
     refs.ignoreError,
   );
-  refs.actionPanel = buildActionPanel(key, refs);
+  refs.actions = buildActions(key, refs);
   refs.conversation = buildConversation(refs);
   refs.tickets = el("div", { class: "tickets" });
   refs.bannerText = el("span", { class: "banner-text" });
@@ -1710,7 +1728,7 @@ function buildDetail(card) {
     { class: "sb-dialog detail" },
     el("span", { class: "sheet-handle", "aria-hidden": "true" }),
     head,
-    refs.actionPanel,
+    refs.actions,
     refs.conversation,
     refs.tickets,
     refs.banner,
@@ -1721,13 +1739,35 @@ function buildDetail(card) {
   return refs;
 }
 
-function buildActionPanel(key, refs) {
+function buildActions(key, refs) {
+  refs.actionCount = el("span", { class: "count-badge" });
+  refs.actionsToggle = el(
+    "button",
+    {
+      type: "button",
+      class: "actions-toggle",
+      "aria-expanded": "false",
+      "aria-controls": "actions-body",
+      onclick: toggleActions,
+    },
+    el("span", { class: "actions-chevron" }, icon("chevron", 14)),
+    icon("bolt", 14),
+    "Actions",
+    refs.actionCount,
+  );
+  refs.actionTurns = el("ol", { class: "action-turns", "aria-label": "Prompts and answers" });
+  refs.actionWorking = el(
+    "p",
+    { class: "action-working", role: "status", hidden: true },
+    el("span", { class: "sb-dot working-dot", "aria-hidden": "true" }),
+    el("span", {}, el("strong", { text: "Claude is working." }), " The answer shows up here."),
+  );
+  refs.actionIntro = el("p", { class: "action-intro", text: ACTIONS_INTRO });
   refs.actionField = el("textarea", {
     id: "action-note",
     class: "textarea",
-    rows: "3",
-    placeholder: "e.g. move PROJ-123 to review and comment that the fix is on staging",
-    "aria-describedby": "action-help",
+    rows: "2",
+    placeholder: "What should Claude do?",
     onkeydown: submitOnModEnter,
   });
   refs.actionField.value = memory.actionDrafts.get(key) ?? "";
@@ -1737,44 +1777,54 @@ function buildActionPanel(key, refs) {
   refs.actionSubmit = el(
     "button",
     { type: "submit", class: "sb-btn button button-strong" },
-    "Plan action",
+    icon("bolt", 14),
+    "Run",
   );
   refs.actionError = errorLine();
-  return el(
-    "form",
-    {
-      id: "action-panel",
-      class: "panel sb-section",
-      hidden: true,
-      onsubmit: (event) => {
-        event.preventDefault();
-        if (!isDisabled(refs.actionSubmit)) void planAction(key);
+  refs.actionsBody = el(
+    "div",
+    { id: "actions-body", class: "actions-body sb-section", hidden: true },
+    refs.actionTurns,
+    refs.actionWorking,
+    refs.actionIntro,
+    el(
+      "form",
+      {
+        class: "action-form",
+        onsubmit: (event) => {
+          event.preventDefault();
+          if (!isDisabled(refs.actionSubmit)) void runPrompt(key);
+        },
       },
-    },
-    el("label", { for: "action-note", class: "field-label", text: "What should Claude do?" }),
-    refs.actionField,
-    el("p", {
-      id: "action-help",
-      class: "hint",
-      text: "Claude turns it into steps: Jira status, comment, assignee, fields, or a Slack reply. You approve them before anything runs.",
-    }),
+      el("label", { for: "action-note", class: "field-label", text: "Prompt" }),
+      refs.actionField,
+      el(
+        "div",
+        { class: "button-row button-row--end" },
+        el("span", { class: "draft-shortcut", text: "Ctrl+Enter" }),
+        refs.actionSubmit,
+      ),
+      refs.actionError,
+    ),
+  );
+  return el(
+    "section",
+    { class: "actions", "aria-labelledby": "actions-heading" },
     el(
       "div",
-      { class: "button-row" },
-      refs.actionSubmit,
-      el(
-        "button",
-        { type: "button", class: "button button-quiet", onclick: toggleAction },
-        "Cancel",
-      ),
+      { class: "section-head" },
+      el("h3", { id: "actions-heading", class: "section-title" }, refs.actionsToggle),
+      el("span", { class: "section-rule", "aria-hidden": "true" }),
+      el("span", { class: "section-hint", text: "Prompts for Claude about this conversation" }),
     ),
-    refs.actionError,
+    refs.actionsBody,
   );
 }
 
 function buildConversation(refs) {
   refs.messageCount = el("span", { class: "count-badge" });
   refs.messageList = el("ol", { class: "messages", "aria-label": "Messages" });
+  refs.historyNote = el("p", { class: "hint history-note" });
   return el(
     "section",
     { class: "conversation", "aria-labelledby": "conversation-heading" },
@@ -1784,9 +1834,13 @@ function buildConversation(refs) {
       el("h3", { id: "conversation-heading", class: "section-title", text: "Conversation" }),
       refs.messageCount,
       el("span", { class: "section-rule", "aria-hidden": "true" }),
-      el("span", { class: "section-hint", text: "Click a message to reply in its thread" }),
+      el("span", {
+        class: "section-hint",
+        text: "The whole thread from Slack. Click a message to reply in its thread",
+      }),
     ),
     refs.messageList,
+    refs.historyNote,
   );
 }
 
@@ -1811,14 +1865,28 @@ function buildComposer(key, refs) {
       {
         type: "button",
         class: "sb-chip reaction hit44",
+        "aria-label": `React with ${reaction} now`,
         onclick: (event) => !isDisabled(event.currentTarget) && sendReaction(key, reaction),
       },
       reaction,
     ),
   );
+  refs.sendWrittenButton = board.polish
+    ? el(
+        "button",
+        {
+          type: "button",
+          class: "sb-chip button button-outline",
+          onclick: (event) =>
+            !isDisabled(event.currentTarget) && void submitComposer(key, sendAsWritten),
+        },
+        icon("send", 14),
+        "Send as written",
+      )
+    : null;
   refs.draftButton = el(
     "button",
-    { type: "submit", class: "button button-strong draft-button" },
+    { type: "submit", class: "button button-strong" },
     board.polish ? "Draft" : "Send",
     el("span", { class: "draft-shortcut", text: "Ctrl+Enter" }),
   );
@@ -1842,10 +1910,10 @@ function buildComposer(key, refs) {
     el(
       "div",
       { class: "button-row" },
-      el("span", { class: "hint", text: "Quick reaction" }),
+      el("span", { class: "hint", text: "React now" }),
       ...refs.reactionButtons,
-      refs.draftButton,
     ),
+    el("div", { class: "button-row button-row--end" }, refs.sendWrittenButton, refs.draftButton),
     refs.composerStatus,
     refs.composerError,
   );
@@ -1856,7 +1924,7 @@ function renderDetail() {
   const card = findCard(detail.key);
   if (card === undefined) return;
   updateDetailHead(detail, card);
-  updateActionPanel(detail, card);
+  updateActions(detail, card);
   updateConversation(detail, card);
   updateTickets(detail, card);
   updateCardState(detail, card);
@@ -1886,37 +1954,105 @@ function updateDetailHead(refs, card) {
   refs.slackLink.hidden = permalink === null;
   if (permalink !== null && refs.slackLink.getAttribute("href") !== permalink)
     refs.slackLink.setAttribute("href", permalink);
-  refs.actionButton.setAttribute("aria-expanded", String(ui.actionOpen));
   const ignoreScope = scopeOf("ignore", card.key);
   setDisabled(refs.ignoreButton, requests.inFlight.has(ignoreScope));
   setText(refs.ignoreError, requests.errors.get(ignoreScope) ?? "");
 }
 
-function updateActionPanel(refs, card) {
-  refs.actionPanel.hidden = !ui.actionOpen;
+function updateActions(refs, card) {
+  refs.actionsToggle.setAttribute("aria-expanded", String(ui.actionsOpen));
+  refs.actionsBody.hidden = !ui.actionsOpen;
+  setText(refs.actionCount, String(card.actions.length));
+  refs.actionWorking.hidden = card.pending?.kind !== "act";
+  refs.actionIntro.hidden = card.actions.length > 0;
+  refs.actionTurns.hidden = card.actions.length === 0;
+  const ticketKeys = boardTicketKeys();
+  syncSection(
+    refs.actionTurns,
+    JSON.stringify([card.actions, card.proposal?.steps.length ?? 0, ticketKeys]),
+    () => turnNodes(card, ticketKeys),
+  );
   const scope = scopeOf("action", card.key);
   setDisabled(refs.actionSubmit, card.pending !== null || requests.inFlight.has(scope));
   setText(refs.actionError, requests.errors.get(scope) ?? "");
 }
 
+function turnNodes(card, ticketKeys) {
+  const pattern = ticketPattern(ticketKeys);
+  const answered = card.actions.findLastIndex((turn) => turn.author === "claude" && !turn.isFailed);
+  const waitingSteps = card.proposal?.steps.length ?? 0;
+  return card.actions.map((turn, index) => {
+    const text = el(
+      "p",
+      { class: "turn-text" },
+      ...messageSegments(turn.text, pattern).map(segmentNode),
+    );
+    const at = timeNode(isoSeconds(turn.at), "");
+    if (turn.author === "me")
+      return el(
+        "li",
+        { class: "sb-msg turn turn--mine" },
+        el("div", { class: "turn-bubble" }, text, el("p", { class: "turn-meta" }, "You · ", at)),
+      );
+    return el(
+      "li",
+      { class: `sb-msg turn${turn.isFailed ? " turn--failed" : ""}` },
+      el("span", { class: "turn-mark", "aria-hidden": "true" }, icon("spark", 14)),
+      el(
+        "div",
+        { class: "turn-bubble" },
+        text,
+        turn.tools.length === 0
+          ? null
+          : el("p", { class: "turn-tools", text: `Looked at ${turn.tools.join(", ")}` }),
+        index === answered && waitingSteps > 0
+          ? el(
+              "button",
+              { type: "button", class: "turn-steps", onclick: focusProposal },
+              `${waitingSteps} ${waitingSteps === 1 ? "step waits" : "steps wait"} for your approval`,
+            )
+          : null,
+        el("p", { class: "turn-meta" }, turn.isFailed ? "Failed · " : "Claude · ", at),
+      ),
+    );
+  });
+}
+
 function updateConversation(refs, card) {
   refs.conversation.hidden = card.kind === "compose";
   if (card.kind === "compose") return;
-  setText(refs.messageCount, String(card.messages.length));
+  const latestTs = latestMessage(card)?.ts ?? null;
+  if (latestTs !== refs.historyTs) {
+    refs.historyTs = latestTs;
+    requestHistory(card.key);
+  }
+  setText(refs.messageCount, String(card.conversation.length));
   const ticketKeys = boardTicketKeys();
-  syncSection(refs.messageList, JSON.stringify([card.messages, ticketKeys]), () =>
+  syncSection(refs.messageList, JSON.stringify([card.conversation, ticketKeys]), () =>
     messageNodes(card, ticketKeys, refs),
+  );
+  const historyError = card.historyError ?? requests.errors.get(scopeOf("history", card.key));
+  setText(
+    refs.historyNote,
+    historyError === undefined ? "" : `${HISTORY_ERROR_PREFIX}${historyError}`,
   );
   updateThreadReplies(refs, card);
 }
 
+const newMessagesDivider = () =>
+  el("li", { class: "new-divider" }, el("span", { text: "New since your last reply" }));
+
 function messageNodes(card, ticketKeys, refs) {
   const pattern = ticketPattern(ticketKeys);
-  const lastIndex = card.messages.length - 1;
+  const messages = card.conversation;
+  const lastIndex = messages.length - 1;
   refs.messageRefs = new Map();
-  return card.messages.map((message, index) => {
+  return messages.flatMap((message, index) => {
     const authorOf = (candidate) => candidate.authorId ?? candidate.authorName;
-    const startsGroup = index === 0 || authorOf(card.messages[index - 1]) !== authorOf(message);
+    const startsGroup =
+      index === 0 || message.startsNew || authorOf(messages[index - 1]) !== authorOf(message);
+    const isWaiting = index === lastIndex && !message.isMine;
+    const author = message.isMine ? "You" : message.authorName;
     const textId = `message-text-${index}`;
     const replyButton = el(
       "button",
@@ -1929,23 +2065,28 @@ function messageNodes(card, ticketKeys, refs) {
         onclick: () => toggleReply(message.ts),
       },
       el("span", { class: "sr-only", text: "Reply in a thread to " }),
-      el("span", { class: "bubble-author", text: message.authorName }),
+      el("span", { class: "bubble-author", text: author }),
       timeNode(slackSeconds(message.ts), "bubble-time"),
     );
     const slot = el("div", { class: "thread-slot" });
     refs.messageRefs.set(message.ts, { button: replyButton, slot, message, form: null });
+    const bubbleClass = message.isMine ? " bubble--mine" : isWaiting ? " bubble--latest" : "";
     const item = el(
       "li",
-      { class: `sb-msg message${startsGroup ? " message--group-start" : ""}` },
-      startsGroup
-        ? avatar(message.authorName, "avatar--36")
-        : el("span", { class: "avatar-spacer", "aria-hidden": "true" }),
+      {
+        class: `sb-msg message${startsGroup ? " message--group-start" : ""}${message.isMine ? " message--mine" : ""}`,
+      },
+      message.isMine
+        ? null
+        : startsGroup
+          ? avatar(message.authorName, "avatar--36")
+          : el("span", { class: "avatar-spacer", "aria-hidden": "true" }),
       el(
         "div",
         { class: "message-body" },
         el(
           "div",
-          { class: `sb-bubble bubble${index === lastIndex ? " bubble--latest" : ""}` },
+          { class: `sb-bubble bubble${bubbleClass}` },
           el(
             "p",
             { id: textId, class: "bubble-text" },
@@ -1954,7 +2095,7 @@ function messageNodes(card, ticketKeys, refs) {
           replyButton,
         ),
         slot,
-        index === lastIndex
+        isWaiting
           ? el(
               "span",
               { class: "waiting" },
@@ -1965,7 +2106,7 @@ function messageNodes(card, ticketKeys, refs) {
       ),
     );
     item.style.animationDelay = `${MESSAGE_STAGGER_BASE_MS + index * MESSAGE_STAGGER_MS}ms`;
-    return item;
+    return message.startsNew ? [newMessagesDivider(), item] : [item];
   });
 }
 
@@ -1983,7 +2124,9 @@ function updateThreadReplies(refs, card) {
       entry.slot.replaceChildren(entry.form.node);
     }
     const scope = scopeOf("thread", threadDraftKey(card.key, ts));
-    setDisabled(entry.form.submit, card.pending !== null || requests.inFlight.has(scope));
+    const busy = card.pending !== null || requests.inFlight.has(scope);
+    setDisabled(entry.form.submit, busy);
+    if (entry.form.sendWritten !== null) setDisabled(entry.form.sendWritten, busy);
     setText(entry.form.error, requests.errors.get(scope) ?? "");
   }
 }
@@ -2007,6 +2150,19 @@ function threadReplyForm(cardKey, message) {
     { type: "submit", class: "sb-btn button button-strong button-small" },
     board.polish ? "Draft thread reply" : "Send thread reply",
   );
+  const sendWritten = board.polish
+    ? el(
+        "button",
+        {
+          type: "button",
+          class: "sb-chip button button-outline button-small",
+          onclick: (event) =>
+            !isDisabled(event.currentTarget) &&
+            void sendThreadReply(cardKey, message.ts, field, sendAsWritten),
+        },
+        "Send as written",
+      )
+    : null;
   const error = errorLine();
   const node = el(
     "form",
@@ -2020,13 +2176,16 @@ function threadReplyForm(cardKey, message) {
     el("label", {
       for: fieldId,
       class: "thread-reply-label",
-      text: `Reply to ${message.authorName} in a thread`,
+      text: message.isMine
+        ? "Reply in the thread of your message"
+        : `Reply to ${message.authorName} in a thread`,
     }),
     field,
     el(
       "div",
       { class: "button-row" },
       submit,
+      sendWritten,
       el(
         "button",
         {
@@ -2039,7 +2198,7 @@ function threadReplyForm(cardKey, message) {
     ),
     error,
   );
-  return { node, submit, error };
+  return { node, submit, sendWritten, error };
 }
 
 function updateTickets(refs, card) {
@@ -2223,8 +2382,10 @@ function updateProposal(refs, card) {
     return;
   }
   const note = memory.notes.get(card.key) ?? null;
-  syncSection(refs.proposal, JSON.stringify([card.proposal, note, replyPlaceLabel(card)]), () =>
-    proposalNodes(card, note, refs),
+  syncSection(
+    refs.proposal,
+    JSON.stringify([card.proposal, card.approveCloses, note, replyPlaceLabel(card)]),
+    () => proposalNodes(card, note, refs),
   );
   if (refs.proposalControls === null || refs.proposalControls === undefined) return;
   const scope = scopeOf("proposal", card.key);
@@ -2244,7 +2405,7 @@ function proposalNodes(card, note, refs) {
       onclick: (event) => !isDisabled(event.currentTarget) && approve(card.key),
     },
     icon("check"),
-    "Approve and send",
+    card.approveCloses ? "Approve and send" : "Approve and run",
   );
   const discardButton = el(
     "button",
@@ -2291,7 +2452,12 @@ function proposalNodes(card, note, refs) {
           { type: "button", class: "button button-quiet new-note-button", onclick: focusComposer },
           "Write a new note",
         ),
-        el("span", { class: "hint proposal-reassure", text: "Nothing is sent until you approve." }),
+        el("span", {
+          class: "hint proposal-reassure",
+          text: card.approveCloses
+            ? "Nothing is sent until you approve."
+            : "Nothing runs until you approve. No reply goes out, so the card stays open.",
+        }),
       ),
       error,
     ),
@@ -2313,6 +2479,7 @@ function stepItem(step, index, texts, replyLabel) {
 }
 
 const issueChip = (issueKey) => el("span", { class: "key-chip", text: issueKey });
+const connectorToolName = (tool) => tool.split("__").slice(2).join("__") || tool;
 const stepTitle = (...parts) => el("p", { class: "step-title" }, ...parts);
 
 function stepContent(step, index, texts, replyLabel) {
@@ -2345,6 +2512,11 @@ function stepContent(step, index, texts, replyLabel) {
         stepTitle(`Change ${Object.keys(step.fields).join(", ")} on `, issueChip(step.issueKey)),
         editedFields(step.fields),
       ];
+    case "tool_call":
+      return [
+        stepTitle("Run ", el("span", { class: "key-chip", text: connectorToolName(step.tool) })),
+        el("pre", { class: "step-input", text: JSON.stringify(step.input, null, 2) }),
+      ];
     default:
       return [stepTitle(`A step the board cannot show: ${String(step.type)}`)];
   }
@@ -2365,6 +2537,7 @@ function updateComposer(refs, card) {
   const scope = scopeOf("propose", card.key);
   const busy = card.pending !== null || requests.inFlight.has(scope);
   setDisabled(refs.draftButton, busy);
+  if (refs.sendWrittenButton !== null) setDisabled(refs.sendWrittenButton, busy);
   for (const button of refs.reactionButtons) setDisabled(button, busy);
   setText(refs.composerStatus, card.pending === null ? "" : BUSY_MESSAGE);
   setText(refs.composerError, requests.errors.get(scope) ?? "");

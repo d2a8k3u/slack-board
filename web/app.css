@@ -889,6 +889,7 @@
     background: var(--strong-bg);
   }
   .section-dot--drafting,
+  .section-dot--working,
   .section-dot--sending {
     background: var(--danger-fg);
   }
@@ -1199,6 +1200,7 @@
     color: var(--on-accent);
   }
   .pill--drafting,
+  .pill--working,
   .pill--sending {
     background: var(--danger-bg);
     color: var(--danger-fg);
@@ -1357,33 +1359,166 @@
     font-size: 14px;
     font-weight: 500;
   }
-  .action-toggle {
-    padding: 0 16px;
-    border: 1px solid var(--line-2);
-    background: var(--surface);
-    color: var(--ink);
-    font-weight: 600;
-  }
-  .action-toggle[aria-expanded="true"] {
-    border-color: var(--strong-bg);
-    background: var(--strong-bg);
-    color: var(--strong-fg);
-  }
-
-  .panel {
+  .actions {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 18px 20px;
+    gap: 14px;
+  }
+  .actions-toggle {
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px 0 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    cursor: pointer;
+  }
+  .actions-toggle:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 8px;
+  }
+  .actions-chevron {
+    display: inline-flex;
+    transform: rotate(-90deg);
+    transition: transform 0.2s ease;
+  }
+  .actions-toggle[aria-expanded="true"] .actions-chevron {
+    transform: none;
+  }
+  .actions-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
     border-radius: 20px;
     background: var(--surface-2);
     border: 1px solid var(--line);
   }
+  .action-turns {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .turn {
+    display: flex;
+    gap: 10px;
+  }
+  .turn--mine {
+    justify-content: flex-end;
+  }
+  .turn-mark {
+    flex: 0 0 30px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--on-accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .turn-bubble {
+    max-width: min(560px, 100%);
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: 4px 18px 18px 18px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--ink);
+  }
+  .turn--mine .turn-bubble {
+    max-width: min(520px, 100%);
+    border-radius: 18px 4px 18px 18px;
+    border-color: var(--strong-bg);
+    background: var(--strong-bg);
+    color: var(--strong-fg);
+  }
+  .turn--failed .turn-bubble {
+    border-color: var(--danger-fg);
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+  }
+  .turn--failed .turn-mark {
+    background: var(--danger-fg);
+  }
+  .turn-text {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+  }
+  .turn-meta {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .turn--mine .turn-meta {
+    color: inherit;
+    text-align: right;
+  }
+  .turn-tools {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+  .turn-steps {
+    align-self: flex-start;
+    min-height: 32px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .turn-steps:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
+  .action-working {
+    margin: 0;
+    padding-left: 40px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+  .action-intro {
+    margin: 0;
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+  .action-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
   .button-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+  }
+  .button-row--end {
+    justify-content: flex-end;
   }
 
   .textarea {
@@ -1426,6 +1561,7 @@
     color: var(--muted);
   }
   .count-badge {
+    letter-spacing: 0;
     min-width: 22px;
     height: 22px;
     padding: 0 7px;
@@ -1491,6 +1627,39 @@
   .bubble--latest {
     background: var(--danger-bg);
     border-color: var(--accent);
+  }
+  .message--mine {
+    justify-content: flex-end;
+  }
+  .message--mine .message-body {
+    align-items: flex-end;
+  }
+  .bubble--mine,
+  .message--group-start .bubble--mine {
+    align-self: flex-end;
+    min-width: min(200px, 100%);
+    border-radius: 18px 4px 18px 18px;
+    background: var(--chip);
+    border-color: var(--line);
+  }
+  .new-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--danger-fg);
+  }
+  .new-divider::before,
+  .new-divider::after {
+    content: "";
+    flex: 1 1 auto;
+    height: 1px;
+    background: var(--line);
+  }
+  .history-note {
+    margin: 0;
   }
   .bubble:has(.bubble-hit:focus-visible) {
     outline: 3px solid var(--focus);
@@ -1866,6 +2035,19 @@
     color: var(--ink-2);
     overflow-wrap: anywhere;
   }
+  .step-input {
+    margin: 0;
+    max-height: 240px;
+    overflow: auto;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--soft);
+    color: var(--ink-2);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
   .proposal-actions {
     display: flex;
     flex-wrap: wrap;
@@ -1902,9 +2084,6 @@
     color: var(--ink-2);
     font-family: var(--font-mono);
     font-size: 12px;
-  }
-  .draft-button {
-    margin-left: auto;
   }
   .draft-shortcut {
     font-size: 12px;
@@ -1969,10 +2148,14 @@
   .results {
     list-style: none;
     margin: 0;
-    padding: 0;
+    padding: 4px 6px 4px 0;
     display: flex;
     flex-direction: column;
     gap: 6px;
+    max-height: min(296px, 45dvh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
   }
   .result {
     width: 100%;

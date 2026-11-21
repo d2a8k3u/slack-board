@@ -17,6 +17,7 @@ export const STATUSES = {
   proposal: { label: "Proposal ready", rank: 4 },
   failed: { label: "Failed", rank: 3 },
   drafting: { label: "Drafting", rank: 2 },
+  working: { label: "Working", rank: 2 },
   sending: { label: "Sending", rank: 2 },
   new: { label: "New", rank: 1 },
 };
@@ -31,7 +32,7 @@ export const TYPE_LABELS = {
 export const DIRECT_LABEL = "Direct and group messages";
 
 const PLACE_LABELS = { dm: "Direct message", group: "Group message", compose: "New message" };
-const STATUS_ORDER = ["proposal", "failed", "drafting", "sending", "new"];
+const STATUS_ORDER = ["proposal", "failed", "drafting", "working", "sending", "new"];
 const TYPE_SECTIONS = [
   { type: "dm", label: "DMs" },
   { type: "mention", label: "Mentions" },
@@ -66,6 +67,7 @@ export function typeOf(card) {
 
 export function statusOf(card) {
   if (card.pending?.kind === "propose") return "drafting";
+  if (card.pending?.kind === "act") return "working";
   if (card.pending?.kind === "execute") return "sending";
   if (card.proposal !== null) return "proposal";
   if (card.error !== null) return "failed";

@@ -118,6 +118,12 @@ test("groups cards into sections in the fixed order of each mode, keeping the gi
     assert.deepEqual(sectionsOf(groupCards(cards, mode)), expected, mode);
 });
 
+test("shows a card whose prompt Claude is working on as working, not as drafting a reply", () => {
+  const working = card("Ana Novak", { pending: { kind: "act", status: "working" } });
+
+  assert.deepEqual(sectionsOf(groupCards([working], "status")), [["Working", ["Ana Novak"]]]);
+});
+
 test("gives every section a key that stays the same while its cards change, so a collapsed section stays collapsed", () => {
   const first = groupCards([card("a", { priority: "info" })], "priority");
   const later = groupCards(
