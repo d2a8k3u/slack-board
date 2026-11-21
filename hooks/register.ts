@@ -1,9 +1,18 @@
 import type { EngineInterface, Register } from "claude-code";
-import { connectorServer } from "../core/connectors.ts";
+import {
+  ACTION_LIMIT_MINUTES,
+  type ActionRun,
+  actionOutcome,
+  expiredRuns,
+  toolVerdict,
+} from "../core/action-runs.ts";
+import { connectorServer, connectorToolParts } from "../core/connectors.ts";
 import { threadTargetFor } from "../core/inbox.ts";
 import { readTicketDetails } from "../core/jira.ts";
 import { parsePriorities } from "../core/priority.ts";
 import {
+  actionAgentPrompt,
+  actionTask,
   type PromptPair,
   priorityPrompt,
   proposalPrompt,
@@ -13,6 +22,7 @@ import {
 } from "../core/prompts.ts";
 import { parseProposal } from "../core/proposal.ts";
 import { nextSyncAt } from "../core/schedule.ts";
+import { readHistory } from "../core/slack-history.ts";
 import { readRecipients, readSearchPage } from "../core/slack-search.ts";
 import { callFor } from "../core/steps.ts";
 import type {
@@ -22,6 +32,7 @@ import type {
   Proposal,
   RankingCard,
   SlackHit,
+  Step,
 } from "../core/types.ts";
 
 type Settings = {
@@ -51,14 +62,26 @@ const BOARD_SERVER_PREFIX = "plugin_slack-board_";
 const JIRA_TOOL = "getJiraIssue";
 const CURRENT_USER = /user_id is (U[A-Z0-9]+)/;
 const DEFAULT_TONE_FILE = "~/.claude/skills/tone-of-voice/SKILL.md";
+const ACTION_AGENT = "action";
+const ACTION_MAX_TURNS = 20;
+const HISTORY_SIZE = 30;
+const THREAD_READ_LIMIT = 200;
+const REPORT_CONSUMED = "The Slack Board shows this answer on its card";
 
 let cachedServers: Servers | null = null;
 let isWorking = false;
 let isSyncing = false;
 let syncDueAt = Date.now() + FIRST_SYNC_DELAY_MS;
+let actionAgentType: string | null = null;
+const runningActions = new Map<string, ActionRun>();
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const reportStatus =
+  ($: EngineInterface) =>
+  (error: unknown): void =>
+    $.ui.status(`Slack Board: ${messageOf(error)}`);
 
 const settingsFrom = (options: Record<string, unknown>): Settings => {
   const numberOr = (value: unknown, fallback: number, min: number) =>
@@ -274,6 +297,107 @@ const propose = async (
     : { ok: false, error: check.reason };
 };
 
+const connectorTools = async ($: EngineInterface): Promise<string[]> =>
+  (await $.tool.list())
+    .map((tool) => tool.name)
+    .filter((name) => connectorToolParts(name) !== null);
+
+const startAction = async (
+  $: EngineInterface,
+  settings: Settings,
+  request: ClaimedRequest,
+): Promise<void> => {
+  const card = cardOf(request);
+  const { text } = request.input as { text: string };
+  const { agent } = await $.agent.register({
+    name: ACTION_AGENT,
+    description: "Works on a prompt the user wrote on a Slack Board card",
+    prompt: actionAgentPrompt(await readToneOfVoice($, settings)),
+    tools: await connectorTools($),
+    model: DRAFT_MODEL,
+    maxTurns: ACTION_MAX_TURNS,
+    permissionMode: "dontAsk",
+    omitClaudeMd: true,
+  });
+  actionAgentType = agent;
+  const started = await $.agent.spawn({
+    subagentType: agent,
+    description: "Slack Board prompt",
+    prompt: actionTask({
+      card,
+      conversation: card.conversation,
+      earlierTurns: card.actions.slice(0, -1),
+      prompt: text,
+    }),
+  });
+  if (started.agentId === undefined)
+    throw new Error(started.deny ?? "Claude Code did not start the agent");
+  runningActions.set(started.agentId, {
+    requestId: request.id,
+    startedAt: await $.clock.now(),
+    tools: [],
+  });
+};
+
+const finishAction = async (
+  $: EngineInterface,
+  agentId: string,
+  outcome: (run: ActionRun) => FinishOutcome,
+): Promise<void> => {
+  const run = runningActions.get(agentId);
+  if (run === undefined) return;
+  runningActions.delete(agentId);
+  await callBoard($, await resolveServers($), "finish_request", {
+    id: run.requestId,
+    outcome: outcome(run),
+  });
+};
+
+const expireActions = async ($: EngineInterface): Promise<void> => {
+  for (const agentId of expiredRuns(runningActions, await $.clock.now()))
+    await finishAction($, agentId, () => ({
+      ok: false,
+      error: `Claude did not finish within ${ACTION_LIMIT_MINUTES} minutes`,
+    }));
+};
+
+const noteToolUse = (agentId: string, tool: string): void => {
+  const run = runningActions.get(agentId);
+  if (run === undefined || run.tools.includes(tool)) return;
+  runningActions.set(agentId, { ...run, tools: [...run.tools, tool] });
+};
+
+const history = async (
+  $: EngineInterface,
+  servers: Servers,
+  request: ClaimedRequest,
+): Promise<FinishOutcome> => {
+  const { channelId, threadTs } = request.input as { channelId: string; threadTs: string | null };
+  const raw =
+    threadTs === null
+      ? await callText($, servers.slack, "slack_read_channel", {
+          channel_id: channelId,
+          limit: HISTORY_SIZE,
+          response_format: "detailed",
+        })
+      : await callText($, servers.slack, "slack_read_thread", {
+          channel_id: channelId,
+          message_ts: threadTs,
+          limit: THREAD_READ_LIMIT,
+          response_format: "detailed",
+        });
+  return { ok: true, history: readHistory(raw).slice(-HISTORY_SIZE) };
+};
+
+const stepServer = (step: Step, servers: Servers, settings: Settings): string => {
+  if (step.type === "tool_call") {
+    const parts = connectorToolParts(step.tool);
+    if (parts === null) throw new Error(`${step.tool} is not a tool of a claude.ai connector`);
+    return parts.server;
+  }
+  return step.type.startsWith("slack_") ? servers.slack : jiraServer(servers, settings);
+};
+
 const execute = async (
   $: EngineInterface,
   servers: Servers,
@@ -291,12 +415,7 @@ const execute = async (
   for (const [index, step] of proposal.steps.entries()) {
     try {
       const call = callFor(step, context);
-      await callText(
-        $,
-        step.type.startsWith("slack_") ? servers.slack : jiraServer(servers, settings),
-        call.tool,
-        call.args,
-      );
+      await callText($, stepServer(step, servers, settings), call.tool, call.args);
     } catch (error) {
       const done = index === 0 ? "nothing was sent" : `steps 1 to ${index} are done`;
       return {
@@ -382,14 +501,20 @@ const lookup = async (
   return { ok: true, results: readRecipients(users, channels) };
 };
 
+const STARTED = "started";
+
 const handle = async (
   $: EngineInterface,
   servers: Servers,
   settings: Settings,
   worker: string,
   request: ClaimedRequest,
-): Promise<FinishOutcome> => {
+): Promise<FinishOutcome | typeof STARTED> => {
   switch (request.kind) {
+    case "act":
+      return startAction($, settings, request).then(() => STARTED);
+    case "history":
+      return history($, servers, request);
     case "propose":
       return propose($, servers, settings, request);
     case "execute":
@@ -417,7 +542,8 @@ const work = async ($: EngineInterface, settings: Settings, worker: string): Pro
     const outcome = await handle($, servers, settings, worker, request).catch(
       (error: unknown): FinishOutcome => ({ ok: false, error: messageOf(error) }),
     );
-    await callBoard($, servers, "finish_request", { id: request.id, outcome });
+    if (outcome !== STARTED)
+      await callBoard($, servers, "finish_request", { id: request.id, outcome });
   } catch (error) {
     cachedServers = null;
     $.ui.status(`Slack Board: ${messageOf(error)}`);
@@ -458,8 +584,33 @@ export const register: Register = (on, options) => {
     $.clock.every(WORKER_TICK_MS, () => {
       void work($, settings, worker);
       void syncWhenDue($, settings, worker);
+      void expireActions($).catch(reportStatus($));
     });
     return next(e);
+  });
+
+  on("turn.complete", async ($, e, next) => {
+    if (e.agentId !== undefined && runningActions.has(e.agentId))
+      await finishAction($, e.agentId, (run) =>
+        actionOutcome(e, run.tools, settings.projectKeys),
+      ).catch(reportStatus($));
+    return next(e);
+  });
+
+  on("agent.report", (_$, e, next) =>
+    e.subagentType === actionAgentType ? { consumed: REPORT_CONSUMED } : next(e),
+  );
+
+  on("agent.offer", (_$, e, next) =>
+    e.agent === actionAgentType ? { isOffered: false } : next(e),
+  );
+
+  on("tool.check", (_$, e, next) => {
+    if (e.agentId === undefined || !runningActions.has(e.agentId)) return next(e);
+    const verdict = toolVerdict(e.tool, e.isReadOnly === true);
+    const parts = connectorToolParts(e.tool);
+    if (verdict.decision === "allow" && parts !== null) noteToolUse(e.agentId, parts.tool);
+    return verdict;
   });
 
   on("command.run", { command: "board" }, async ($) => {

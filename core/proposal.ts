@@ -195,10 +195,15 @@ const answerOf = (answer: string, projectKeys: string[]): ActionAnswer => {
     : { reply, proposal: null, proposalError: check.reason };
 };
 
+export class NoAnswer extends Error {
+  constructor() {
+    super("Claude finished without an answer");
+  }
+}
+
 export const parseActionAnswer = (answer: string, projectKeys: string[]): ActionAnswer => {
   const parsed = answerOf(answer, projectKeys);
-  if (parsed.reply === "" && parsed.proposal === null)
-    throw new Error("Claude finished without an answer");
+  if (parsed.reply === "" && parsed.proposal === null) throw new NoAnswer();
   return parsed;
 };
 
