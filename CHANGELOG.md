@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- `/board` opens the board even when the Slack connector is not connected.
+- When `/board` cannot open the board, it says why instead of "no command.run hook answered it".
+
 ## 0.1.0
 
 - `/board` opens the board in your browser, served on `127.0.0.1` at the `port` setting (4747 by default). It fills after the first sync, about 5 seconds after Claude Code starts.
