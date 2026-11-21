@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en" class="sb-light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Slack Board</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;700&amp;family=IBM+Plex+Mono:wght@500&amp;display=swap">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <p id="announcer" class="sr-only" aria-live="polite"></p>
+
+  <main id="signed-out" class="signed-out" hidden>
+    <p>Open the board with /board in Claude Code</p>
+  </main>
+
+  <div id="app" class="sb-root" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14M5 12h9M5 17h5"></path></svg>
+        </div>
+        <div class="brand-text">
+          <h1 class="brand-name">Slack Board</h1>
+          <p id="board-status" class="brand-status"></p>
+          <p id="sync-error" class="header-error" role="alert"></p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <fieldset class="segmented" aria-label="Theme">
+          <button type="button" class="sb-chip segment hit44" data-theme-option="system" aria-pressed="true">System</button>
+          <button type="button" class="sb-chip segment hit44" data-theme-option="light" aria-pressed="false">Light</button>
+          <button type="button" class="sb-chip segment hit44" data-theme-option="dark" aria-pressed="false">Dark</button>
+        </fieldset>
+        <div class="control-with-error">
+          <button id="sync-button" type="button" class="button button-outline" aria-describedby="sync-button-error">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 5v6h-6"></path></svg>
+            Sync now
+          </button>
+          <p id="sync-button-error" class="field-error" role="alert"></p>
+        </div>
+        <button id="compose-button" type="button" class="sb-btn button button-accent" aria-haspopup="dialog">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+          New message
+        </button>
+      </div>
+      <p id="connection-error" class="header-error header-error--wide" role="alert"></p>
+    </header>
+
+    <main class="board" aria-labelledby="list-heading">
+      <div class="board-title">
+        <h2 id="list-heading" class="board-heading" tabindex="-1">Waiting for you</h2>
+        <span id="visible-count" class="board-count"></span>
+      </div>
+
+      <search class="toolbar" aria-label="Search, filter, group and sort cards">
+        <div class="sb-search search-field">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+          <label for="board-search" class="sr-only">Search cards</label>
+          <input id="board-search" class="search-field-input" type="search" placeholder="Search people, channels, messages, tickets" autocomplete="off" spellcheck="false" aria-keyshortcuts="/">
+          <button id="search-clear" type="button" class="search-clear hit44" aria-label="Clear search" hidden>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+          </button>
+          <kbd id="search-hint" class="search-hint" aria-hidden="true">/</kbd>
+        </div>
+
+        <button id="filters-button" type="button" class="sb-chip toolbar-button filters-button" aria-expanded="false" aria-controls="filters-panel">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"></path></svg>
+          Filters
+          <span id="filters-count" class="filters-count" hidden></span>
+        </button>
+
+        <div class="toolbar-field">
+          <label for="group-select">Group</label>
+          <span class="select-wrap select-wrap--bare">
+            <select id="group-select">
+              <option value="none">None</option>
+              <option value="priority">Priority</option>
+              <option value="type">Type</option>
+              <option value="channel">Channel</option>
+              <option value="person">Person</option>
+              <option value="status">Status</option>
+            </select>
+            <svg class="select-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+          </span>
+        </div>
+
+        <div class="toolbar-field">
+          <label for="f-sort">Sort</label>
+          <span id="sort-select-wrap" class="select-wrap select-wrap--bare">
+            <select id="f-sort">
+              <option value="priority">Priority</option>
+              <option value="time">Latest message</option>
+              <option value="status">Status</option>
+              <option value="person">Person</option>
+              <option value="channel">Channel</option>
+              <option value="messages">Number of messages</option>
+            </select>
+            <svg class="select-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+          </span>
+          <span id="best-match" class="best-match" hidden>Best match</span>
+        </div>
+        <button id="sort-direction" type="button" class="sb-chip icon-tool direction">
+          <svg class="direction-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"></path></svg>
+        </button>
+
+        <fieldset class="segmented segmented--square" aria-label="View">
+          <button type="button" class="sb-chip segment segment--icon" data-view-option="tiles" aria-pressed="true" aria-label="Tiles" title="Tiles">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>
+          </button>
+          <button type="button" class="sb-chip segment segment--icon" data-view-option="list" aria-pressed="false" aria-label="List" title="List">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+          </button>
+        </fieldset>
+
+        <fieldset id="filters-panel" class="sb-popover filters-panel" aria-label="Filters" hidden>
+          <div class="filters-block">
+            <span id="type-caption" class="field-caption">Type</span>
+            <fieldset id="type-filters" class="type-filters" aria-labelledby="type-caption"></fieldset>
+          </div>
+          <div class="filters-grid">
+            <div class="field">
+              <label for="f-channel" class="field-caption">Channel</label>
+              <span class="select-wrap">
+                <select id="f-channel" class="select"></select>
+                <svg class="select-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+              </span>
+            </div>
+            <div class="field">
+              <label for="f-person" class="field-caption">Person</label>
+              <span class="select-wrap">
+                <select id="f-person" class="select"></select>
+                <svg class="select-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+              </span>
+            </div>
+            <div class="field">
+              <label for="f-priority" class="field-caption">Priority</label>
+              <span class="select-wrap">
+                <select id="f-priority" class="select">
+                  <option value="any">Any priority</option>
+                  <option value="decision">Decision</option>
+                  <option value="action">Action</option>
+                  <option value="info">Info</option>
+                  <option value="social">Small talk</option>
+                </select>
+                <svg class="select-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+              </span>
+            </div>
+          </div>
+          <div class="filters-foot">
+            <button id="clear-filters" type="button" class="button-link">Clear filters</button>
+            <button id="filters-done" type="button" class="sb-btn button button-strong button-small">Done</button>
+          </div>
+        </fieldset>
+      </search>
+
+      <div id="active-filters-row" class="active-filters" hidden>
+        <ul id="active-filters" class="active-filters-list" aria-label="Active filters"></ul>
+        <button id="clear-all" type="button" class="button-link button-link--small">Clear all</button>
+      </div>
+
+      <p id="list-status" class="list-status" role="status"></p>
+      <div id="empty-state" class="empty-state" role="status" hidden>
+        <p class="empty-title">Nothing matches</p>
+        <p class="empty-text">Try fewer words or clear the filters.</p>
+        <button id="empty-clear" type="button" class="button button-outline">Clear search and filters</button>
+      </div>
+      <div id="card-sections" class="card-sections"></div>
+    </main>
+  </div>
+
+  <dialog id="detail-dialog" class="sb-backdrop modal-shell" aria-labelledby="detail-heading"></dialog>
+
+  <dialog id="compose-dialog" class="sb-backdrop modal-shell modal-shell--centered" aria-labelledby="new-heading">
+    <section class="sb-dialog compose">
+      <div class="compose-head">
+        <h2 id="new-heading" class="dialog-title">New message</h2>
+        <button id="compose-close" type="button" class="icon-button" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+        </button>
+      </div>
+      <div class="compose-field">
+        <label for="compose-query" class="field-label">To</label>
+        <div class="search-box">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+          <input id="compose-query" class="search-input" type="search" autocomplete="off" spellcheck="false" aria-describedby="compose-hint compose-status">
+        </div>
+        <p id="compose-hint" class="hint">A person or a channel. Results show instantly from your saved list.</p>
+      </div>
+      <p id="compose-status" class="hint" aria-live="polite"></p>
+      <p id="compose-error" class="field-error" role="alert"></p>
+      <ul id="compose-results" class="results" aria-label="Results"></ul>
+      <p class="hint">Pick one and a new card opens. Write your message there, approve it, and it goes out.</p>
+    </section>
+  </dialog>
+</body>
+</html>
