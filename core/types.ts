@@ -107,7 +107,9 @@ export type RequestKind =
   | "lookup"
   | "sync"
   | "details"
-  | "classify";
+  | "classify"
+  | "act"
+  | "history";
 
 export type RankingCard = {
   key: string;
@@ -133,6 +135,9 @@ export type BoardCard = {
   updatedAt: string;
   priority: Priority | null;
   priorityReason: string | null;
+  actions: ActionTurn[];
+  conversation: ConversationMessage[];
+  historyError: string | null;
 };
 
 export type Recipient = { channelId: string; label: string; kind: "person" | "channel" };
@@ -156,5 +161,9 @@ export type FinishOutcome =
       results?: Recipient[];
       details?: TicketDetails;
       priorities?: CardPriority[];
+      reply?: string;
+      tools?: string[];
+      proposalError?: string;
+      history?: HistoryMessage[];
     }
   | { ok: false; error: string; remaining?: Proposal };
