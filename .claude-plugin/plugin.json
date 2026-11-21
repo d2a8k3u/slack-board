@@ -1,0 +1,70 @@
+{
+  "name": "slack-board",
+  "version": "0.1.0",
+  "description": "Board of Slack messages for you: drafts replies in your tone of voice and sends them after your approval",
+  "author": {
+    "name": "David Kulhanek"
+  },
+  "license": "MIT",
+  "mcpServers": {
+    "board": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/main.ts"],
+      "env": {
+        "BOARD_PORT": "${user_config.port}",
+        "BOARD_JIRA_PROJECTS": "${user_config.jira_projects}",
+        "BOARD_POLISH": "${user_config.polish_replies}"
+      }
+    }
+  },
+  "userConfig": {
+    "port": {
+      "type": "number",
+      "title": "Board port",
+      "description": "Local port the board page is served on (127.0.0.1 only)",
+      "default": 4747
+    },
+    "jira_site": {
+      "type": "string",
+      "title": "Jira site",
+      "description": "Atlassian site hostname for ticket details and actions, e.g. yourteam.atlassian.net. Empty turns the Jira features off.",
+      "default": ""
+    },
+    "jira_projects": {
+      "type": "string",
+      "title": "Jira project keys",
+      "description": "Comma-separated Jira project keys that count as tickets in messages, e.g. PROJ,OPS. Empty finds no tickets.",
+      "default": ""
+    },
+    "sync_minutes": {
+      "type": "number",
+      "title": "Sync interval (minutes)",
+      "description": "How often Slack is checked while Claude Code is open",
+      "default": 5
+    },
+    "polish_replies": {
+      "type": "boolean",
+      "title": "Polish replies with Claude",
+      "description": "On: Claude turns your note into a reply in your style and you approve it. Off: your text is sent exactly as you wrote it.",
+      "default": true
+    },
+    "style_prompt": {
+      "type": "string",
+      "title": "Reply style prompt",
+      "description": "How Claude should write your replies. Empty uses your tone of voice file, or the built-in style when that file does not exist.",
+      "default": ""
+    },
+    "tone_of_voice_file": {
+      "type": "string",
+      "title": "Tone of voice file",
+      "description": "Markdown file with your writing style for drafted replies. When the file does not exist, a built-in plain and friendly style is used.",
+      "default": "~/.claude/skills/tone-of-voice/SKILL.md"
+    },
+    "lookback_days": {
+      "type": "number",
+      "title": "First sync lookback (days)",
+      "description": "How far back the first sync looks for messages",
+      "default": 7
+    }
+  }
+}
