@@ -78,16 +78,21 @@ const settingsFrom = (options: Record<string, unknown>): Settings => {
   };
 };
 
+const boardServerIn = (toolNames: string[]): string => {
+  const board = toolNames.find(
+    (name) => name.startsWith(`mcp__${BOARD_SERVER_PREFIX}`) && name.endsWith(`__${BOARD_TOOL}`),
+  );
+  if (board === undefined)
+    throw new Error("The slack-board MCP server is not connected in this session");
+  return board.slice("mcp__".length, -`__${BOARD_TOOL}`.length);
+};
+
 const resolveServers = async ($: EngineInterface): Promise<Servers> => {
   if (cachedServers !== null) return cachedServers;
   const tools = await $.tool.list();
   const names = tools.map((tool) => tool.name);
-  const board = names.find(
-    (name) => name.startsWith(`mcp__${BOARD_SERVER_PREFIX}`) && name.endsWith(`__${BOARD_TOOL}`),
-  );
+  const board = boardServerIn(names);
   const slack = connectorServer(names, SEARCH_TOOL);
-  if (board === undefined)
-    throw new Error("The slack-board MCP server is not connected in this session");
   if (slack === null)
     throw new Error(
       "Connect Slack on claude.ai (Settings, Connectors); the board uses only claude.ai connectors",
@@ -97,7 +102,7 @@ const resolveServers = async ($: EngineInterface): Promise<Servers> => {
   )?.[1];
   if (me === undefined) throw new Error("The Slack connector does not say which user is signed in");
   cachedServers = {
-    board: board.slice("mcp__".length, -`__${BOARD_TOOL}`.length),
+    board,
     slack,
     jira: connectorServer(names, JIRA_TOOL),
     me,
@@ -458,8 +463,10 @@ export const register: Register = (on, options) => {
   });
 
   on("command.run", { command: "board" }, async ($) => {
-    const servers = await resolveServers($);
-    await $.process.run(["open", await callText($, servers.board, "board_url", {})]);
+    const board = boardServerIn((await $.tool.list()).map((tool) => tool.name));
+    await $.process.run(["open", await callText($, board, "board_url", {})]);
     return { text: "The Slack Board is open in your browser." };
-  });
+  }).catch((_$, _e, next) => ({
+    text: `Slack Board: ${next.error.message ?? "/board did not finish in time"}`,
+  }));
 };
