@@ -207,6 +207,32 @@ test(
 );
 
 test(
+  "lets me reply in the thread of an earlier message the conversation shows",
+  withBoard(async (port, token, store) => {
+    seedCard(store);
+    store.requestHistory("D01", new Date());
+    store.finish(
+      store.claim("worker", new Date())?.id ?? 0,
+      {
+        ok: true,
+        history: [
+          { ts: "1794999000.000000", authorId: "U_ANA", authorName: "Ana Novak", text: "Earlier" },
+        ],
+      },
+      new Date(),
+    );
+
+    const reply = await send(port, "/api/cards/D01/send", {
+      method: "POST",
+      headers: { "x-board-token": token },
+      body: { text: "About that", replyToTs: "1794999000.000000" },
+    });
+
+    assert.equal(reply.status, 202);
+  }),
+);
+
+test(
   "sends my own text as written, without a Claude step, and tells the page whether polishing is on",
   withBoard(async (port, token, store) => {
     seedCard(store);

@@ -355,29 +355,33 @@ export class BoardStore {
           .all() as { card_key: string; kind: RequestKind; status: RequestStatus }[]
       ).map((row) => [row.card_key, { kind: row.kind, status: row.status }]),
     );
-    return rows.map((row) => ({
-      key: row.key,
-      kind: row.kind,
-      title: row.title,
-      target: targetOf(row),
-      messages: messagesOf(row),
-      actions: row.actions === null ? [] : (JSON.parse(row.actions) as ActionTurn[]),
-      conversation: conversationView(
-        row.history === null ? [] : (JSON.parse(row.history) as HistoryMessage[]),
-        messagesOf(row),
-        me,
-      ),
-      historyError: row.history_error,
-      tickets: (JSON.parse(row.ticket_keys) as string[])
-        .map((key) => tickets.get(key))
-        .filter((ticket) => ticket !== undefined),
-      proposal: row.proposal === null ? null : (JSON.parse(row.proposal) as Proposal),
-      pending: open.get(row.key) ?? null,
-      error: row.error,
-      updatedAt: row.updated_at,
-      priority: row.priority,
-      priorityReason: row.priority_reason,
-    }));
+    return rows.map((row) => {
+      const proposal = row.proposal === null ? null : (JSON.parse(row.proposal) as Proposal);
+      return {
+        key: row.key,
+        kind: row.kind,
+        title: row.title,
+        target: targetOf(row),
+        messages: messagesOf(row),
+        actions: row.actions === null ? [] : (JSON.parse(row.actions) as ActionTurn[]),
+        conversation: conversationView(
+          row.history === null ? [] : (JSON.parse(row.history) as HistoryMessage[]),
+          messagesOf(row),
+          me,
+        ),
+        historyError: row.history_error,
+        tickets: (JSON.parse(row.ticket_keys) as string[])
+          .map((key) => tickets.get(key))
+          .filter((ticket) => ticket !== undefined),
+        proposal,
+        approveCloses: proposal !== null && answersConversation(proposal.steps),
+        pending: open.get(row.key) ?? null,
+        error: row.error,
+        updatedAt: row.updated_at,
+        priority: row.priority,
+        priorityReason: row.priority_reason,
+      };
+    });
   }
 
   act(key: string, text: string, now: Date): boolean {
