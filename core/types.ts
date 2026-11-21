@@ -19,12 +19,23 @@ export type SearchPage = { hits: SlackHit[]; cursor: string | null };
 
 export type ReplyTarget = { channelId: string; threadTs: string | null };
 
-export type CardMessage = {
+export type HistoryMessage = {
   ts: string;
   authorId: string | null;
   authorName: string;
   text: string;
-  permalink: string;
+};
+
+export type CardMessage = HistoryMessage & { permalink: string };
+
+export type ConversationMessage = HistoryMessage & { isMine: boolean; startsNew: boolean };
+
+export type ActionTurn = {
+  author: "me" | "claude";
+  text: string;
+  at: string;
+  tools: string[];
+  isFailed: boolean;
 };
 
 export type TicketDetails = {
@@ -54,13 +65,20 @@ export type Step =
   | { type: "jira_comment"; issueKey: string; body: string }
   | { type: "jira_transition"; issueKey: string; transitionId: string; status: string }
   | { type: "jira_assign"; issueKey: string; assignee: string }
-  | { type: "jira_edit"; issueKey: string; fields: JiraEditableFields };
+  | { type: "jira_edit"; issueKey: string; fields: JiraEditableFields }
+  | { type: "tool_call"; tool: string; input: Record<string, unknown> };
 
 export type JiraEditableFields = { summary?: string; labels?: string[]; priority?: string };
 
 export type Proposal = { summary: string; steps: Step[]; replyToTs?: string | null };
 
 export type ProposalCheck = { ok: true; proposal: Proposal } | { ok: false; reason: string };
+
+export type ActionAnswer = {
+  reply: string;
+  proposal: Proposal | null;
+  proposalError: string | null;
+};
 
 export type ToolCall = { tool: string; args: Record<string, unknown> };
 

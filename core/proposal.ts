@@ -1,8 +1,10 @@
+import { connectorToolParts } from "./connectors.ts";
 import { isTicketOf } from "./tickets.ts";
-import type { JiraEditableFields, Proposal, ProposalCheck, Step } from "./types.ts";
+import type { ActionAnswer, JiraEditableFields, Proposal, ProposalCheck, Step } from "./types.ts";
 
 export const SLACK_TEXT_LIMIT = 5000;
 export const MAX_STEPS = 10;
+export const MAX_TOOL_INPUT_CHARS = 8000;
 
 const EMOJI_NAME = /^[a-z0-9_+'-]+$/;
 const TRANSITION_ID = /^\d+$/;
@@ -71,6 +73,20 @@ const editableFields = (step: Fields): JiraEditableFields => {
   return fields as JiraEditableFields;
 };
 
+const connectorTool = (step: Fields): string => {
+  const tool = text(step, "tool");
+  if (connectorToolParts(tool) === null) reject(`${tool} is not a tool of a claude.ai connector`);
+  return tool;
+};
+
+const toolInput = (step: Fields): Record<string, unknown> => {
+  const input = step.input;
+  if (!isRecord(input)) return reject("tool_call needs its input as an object");
+  if (JSON.stringify(input).length > MAX_TOOL_INPUT_CHARS)
+    reject(`A tool call's input holds at most ${MAX_TOOL_INPUT_CHARS} characters`);
+  return input;
+};
+
 const checkStep = (value: unknown, projectKeys: string[]): Step => {
   if (!isRecord(value)) return reject("Every step must be an object");
   switch (value.type) {
@@ -103,6 +119,8 @@ const checkStep = (value: unknown, projectKeys: string[]): Step => {
         issueKey: issueKey(value, projectKeys),
         fields: editableFields(value),
       };
+    case "tool_call":
+      return { type: "tool_call", tool: connectorTool(value), input: toolInput(value) };
     default:
       return reject(`${String(value.type)} is not an allowed step`);
   }
@@ -159,6 +177,29 @@ export const directProposal = (text: string, replyToTs: string | null): Proposal
     steps: [{ type: "slack_reply", text: trimmed }],
     replyToTs,
   };
+};
+
+const isStructuredAnswer = (value: unknown): value is Fields & { reply: string } =>
+  isRecord(value) && typeof value.reply === "string";
+
+const answerOf = (answer: string, projectKeys: string[]): ActionAnswer => {
+  const value = jsonIn(answer);
+  if (!isStructuredAnswer(value))
+    return { reply: answer.trim(), proposal: null, proposalError: null };
+  const reply = value.reply.trim();
+  if (value.proposal === undefined || value.proposal === null)
+    return { reply, proposal: null, proposalError: null };
+  const check = checkProposal(value.proposal, projectKeys);
+  return check.ok
+    ? { reply, proposal: check.proposal, proposalError: null }
+    : { reply, proposal: null, proposalError: check.reason };
+};
+
+export const parseActionAnswer = (answer: string, projectKeys: string[]): ActionAnswer => {
+  const parsed = answerOf(answer, projectKeys);
+  if (parsed.reply === "" && parsed.proposal === null)
+    throw new Error("Claude finished without an answer");
+  return parsed;
 };
 
 export const parseProposal = (answer: string, projectKeys: string[]): ProposalCheck => {

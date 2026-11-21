@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callFor } from "./steps.ts";
+import { answersConversation, callFor } from "./steps.ts";
 import type { Step, StepContext, ToolCall } from "./types.ts";
 
 const THREAD: StepContext = {
@@ -63,9 +63,27 @@ test("turns each approved step into the connector call that does it, in the righ
       step: { type: "jira_edit", issueKey: "PROJ-1", fields: { labels: ["backend"] } },
       call: { tool: "editJiraIssue", args: { ...ISSUE, fields: { labels: ["backend"] } } },
     },
+    {
+      context: DM,
+      step: {
+        type: "tool_call",
+        tool: "mcp__claude_ai_Notion__notion-create-pages",
+        input: { title: "Notes" },
+      },
+      call: { tool: "notion-create-pages", args: { title: "Notes" } },
+    },
   ];
 
   for (const row of rows) assert.deepEqual(callFor(row.step, row.context), row.call, row.step.type);
+});
+
+test("counts a conversation as answered only when the steps post a reply or a reaction to it", () => {
+  const comment: Step = { type: "jira_comment", issueKey: "PROJ-1", body: "Fixed." };
+  const call: Step = { type: "tool_call", tool: "mcp__claude_ai_Notion__notion-search", input: {} };
+
+  assert.equal(answersConversation([comment, { type: "slack_reply", text: "Done." }]), true);
+  assert.equal(answersConversation([{ type: "slack_reaction", emoji: "eyes" }]), true);
+  assert.equal(answersConversation([comment, call]), false);
 });
 
 test("refuses a reaction where there is no message to react to", () => {

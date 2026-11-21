@@ -1,3 +1,4 @@
+import { connectorToolParts } from "./connectors.ts";
 import type { Step, StepContext, ToolCall } from "./types.ts";
 
 const issue = (context: StepContext, issueKey: string) => ({
@@ -21,6 +22,15 @@ const slackReaction = (context: StepContext, emoji: string): ToolCall => {
     tool: "slack_add_reaction",
     args: { channel_id: context.target.channelId, message_ts: context.reactionTs, emoji },
   };
+};
+
+export const answersConversation = (steps: Step[]): boolean =>
+  steps.some((step) => step.type === "slack_reply" || step.type === "slack_reaction");
+
+const connectorCall = (tool: string, input: Record<string, unknown>): ToolCall => {
+  const parts = connectorToolParts(tool);
+  if (parts === null) throw new Error(`${tool} is not a tool of a claude.ai connector`);
+  return { tool: parts.tool, args: input };
 };
 
 export const callFor = (step: Step, context: StepContext): ToolCall => {
@@ -49,5 +59,7 @@ export const callFor = (step: Step, context: StepContext): ToolCall => {
         tool: "editJiraIssue",
         args: { ...issue(context, step.issueKey), fields: step.fields },
       };
+    case "tool_call":
+      return connectorCall(step.tool, step.input);
   }
 };

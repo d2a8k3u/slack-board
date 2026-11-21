@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkProposal, directProposal, parseProposal, SLACK_TEXT_LIMIT } from "./proposal.ts";
+import {
+  checkProposal,
+  directProposal,
+  MAX_TOOL_INPUT_CHARS,
+  parseActionAnswer,
+  parseProposal,
+  SLACK_TEXT_LIMIT,
+} from "./proposal.ts";
 
 const PROJECTS = ["PROJ"];
 
@@ -73,6 +80,58 @@ test("rejects steps outside the allowed list and their invalid shapes", () => {
   assert.match(rejection(steps({ type: "slack_reply", text: "  " })), /text/);
   assert.match(rejection({ summary: "s", steps: [] }), /steps/);
   assert.match(rejection(null), /proposal/);
+});
+
+test("accepts a call of a claude.ai connector tool with its exact input, and refuses any other tool or input", () => {
+  const call = (tool: string, input: unknown) => ({
+    summary: "s",
+    steps: [{ type: "tool_call", tool, input }],
+  });
+  const sized = (chars: number) => ({ text: "a".repeat(chars - '{"text":""}'.length) });
+  const notion = "mcp__claude_ai_Notion__notion-create-pages";
+
+  assert.deepEqual(checkProposal(call(notion, { title: "Notes" }), PROJECTS), {
+    ok: true,
+    proposal: call(notion, { title: "Notes" }),
+  });
+  assert.equal(checkProposal(call(notion, sized(MAX_TOOL_INPUT_CHARS)), PROJECTS).ok, true);
+  assert.match(rejection(call(notion, sized(MAX_TOOL_INPUT_CHARS + 1))), /8000/);
+  assert.match(
+    rejection(call("mcp__plugin_slack-board_board__finish_request", {})),
+    /not a tool of a claude\.ai connector/,
+  );
+  assert.match(rejection(call("Bash", { command: "ls" })), /not a tool of a claude\.ai connector/);
+  assert.match(rejection(call(notion, ["Notes"])), /input/);
+});
+
+test("reads Claude's answer to a prompt with the steps it proposes, keeping the answer when the steps are refused", () => {
+  const proposal = {
+    summary: "Move PROJ-1 to review",
+    steps: [{ type: "jira_transition", issueKey: "PROJ-1", transitionId: "31", status: "Review" }],
+  };
+  const structured = (value: unknown) => `Done.\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\``;
+
+  assert.deepEqual(
+    parseActionAnswer(structured({ reply: "PROJ-1 is ready to move.", proposal }), PROJECTS),
+    { reply: "PROJ-1 is ready to move.", proposal, proposalError: null },
+  );
+  assert.deepEqual(
+    parseActionAnswer(structured({ reply: "Nothing to change.", proposal: null }), PROJECTS),
+    { reply: "Nothing to change.", proposal: null, proposalError: null },
+  );
+  assert.deepEqual(
+    parseActionAnswer(
+      structured({ reply: "Deleting it.", proposal: { summary: "s", steps: [{ type: "x" }] } }),
+      PROJECTS,
+    ),
+    { reply: "Deleting it.", proposal: null, proposalError: "x is not an allowed step" },
+  );
+  assert.deepEqual(parseActionAnswer(' PROJ-1 shows {"status": "Done"} in Jira. ', PROJECTS), {
+    reply: 'PROJ-1 shows {"status": "Done"} in Jira.',
+    proposal: null,
+    proposalError: null,
+  });
+  assert.throws(() => parseActionAnswer("  ", PROJECTS), /without an answer/);
 });
 
 test("holds a Slack reply to the Slack message limit", () => {

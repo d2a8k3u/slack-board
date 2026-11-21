@@ -8,6 +8,13 @@ const serverOf = (toolName: string, tool: string): string | null => {
   return toolName.slice(MCP_PREFIX.length, -suffix.length);
 };
 
+const MCP_TOOL = /^mcp__(.+?)__(.+)$/;
+
+export const connectorToolParts = (name: string): { server: string; tool: string } | null => {
+  const [, server = "", tool = ""] = MCP_TOOL.exec(name) ?? [];
+  return CLAUDE_AI_SERVER.test(server) ? { server, tool } : null;
+};
+
 export const connectorServer = (toolNames: string[], tool: string): string | null =>
   toolNames
     .map((name) => serverOf(name, tool))
