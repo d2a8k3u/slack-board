@@ -1,0 +1,23 @@
+{
+  "name": "slack-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json && biome check --error-on-warnings . && npm test",
+    "fix": "biome check --write .",
+    "test": "node --test core/*.test.ts server/*.test.ts web/*.test.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "validate": "claude plugin validate .",
+    "vendor": "rm -rf web/vendor/typoseek && mkdir -p web/vendor/typoseek && cp node_modules/typoseek/dist/*.mjs node_modules/typoseek/LICENSE web/vendor/typoseek/"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "typoseek": "0.1.0"
+  }
+}
