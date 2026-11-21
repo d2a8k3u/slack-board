@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Actions replaces the Action button. Write a prompt the way you would in Claude Code: Claude looks things up with your claude.ai connectors, answers on the card and keeps the history there. Tools that only read run on their own; any change comes back as steps you approve, including calls of other connectors' tools with their exact input.
+- Conversation shows the last 30 messages of the thread or DM from Slack, your own messages on the right, with a line where the messages waiting for you start. You can reply in the thread of any of them.
+- Send as written next to Draft sends your text as you typed it, in the reply box and in thread replies.
+- The reaction buttons, now React now, send the reaction at once without a proposal.
+- Approving steps that only change tickets or other tools keeps the card open; a reply or reaction still closes it.
+- The New message list keeps a fixed height and scrolls.
+
 ## 0.1.1
 
 - `/board` opens the board even when the Slack connector is not connected.

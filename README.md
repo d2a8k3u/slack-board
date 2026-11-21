@@ -21,8 +21,10 @@ The small talk at the bottom can wait until lunch.
 - Collects DMs, group DMs, @mentions and replies in your threads every 5 minutes while Claude Code is open. One conversation is one card; answer it in Slack and the card goes away.
 - Ranks cards by what they need from you: Decision, Action, Info or Small talk.
 - Shows status, assignee and priority of every Jira ticket a message mentions. Claude summarises a ticket only when you ask.
-- Drafts replies, reactions and Jira steps (comment, status, assignee, fields) from your note. You edit and approve; nothing is sent before that.
-- Replies in the thread of any message you click, takes free instructions through Action, and starts new messages to people or channels.
+- Shows the whole conversation from Slack, your own messages included, and marks where the messages waiting for you start.
+- Drafts replies, reactions and Jira steps (comment, status, assignee, fields) from your note. You edit and approve; nothing is sent before that. Send as written and the reaction buttons go out at once, without Claude.
+- Runs prompts about a conversation in Actions the way Claude Code does: Claude looks things up with your claude.ai connectors, answers on the card, and proposes any change as steps you approve.
+- Replies in the thread of any message you click and starts new messages to people or channels.
 - Typo-tolerant search across people, channels, messages and tickets, filters, grouping into sections, tiles or list, light and dark theme.
 - Mentions show as names; click one to start a message to that person.
 
@@ -49,7 +51,7 @@ To use Jira, set `jira_site` (for example `yourteam.atlassian.net`) and `jira_pr
 
 ## Learn more
 
-- [Use the board](docs/usage.md): replies, actions, threads, tickets, new messages.
+- [Use the board](docs/usage.md): conversations, replies, threads, prompts, tickets, new messages.
 - [Settings](docs/settings.md): every option with its default.
 - [How it works](docs/how-it-works.md): what runs where, what Claude is asked, what is stored, and the security model.
 - [Contributing](CONTRIBUTING.md): set up, checks and code style.
