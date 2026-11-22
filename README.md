@@ -23,14 +23,14 @@ The small talk at the bottom can wait until lunch.
 - Shows status, assignee and priority of every Jira ticket a message mentions. Claude summarises a ticket only when you ask.
 - Shows the whole conversation from Slack, your own messages included, and marks where the messages waiting for you start.
 - Drafts replies, reactions and Jira steps (comment, status, assignee, fields) from your note. You edit and approve; nothing is sent before that. Send as written and the reaction buttons go out at once, without Claude.
-- Runs prompts about a conversation in Actions the way Claude Code does: Claude looks things up with your claude.ai connectors, answers on the card, and proposes any change as steps you approve.
+- Runs prompts about a conversation in Actions the way Claude Code does: Claude looks things up with your connectors, answers on the card, and proposes any change as steps you approve.
 - Replies in the thread of any message you click and starts new messages to people or channels.
 - Typo-tolerant search across people, channels, messages and tickets, filters, grouping into sections, tiles or list, light and dark theme.
 - Mentions show as names; click one to start a message to that person.
 
 ## Requirements
 
-- Claude Code signed in with a claude.ai account, with the Slack connector connected on claude.ai (Settings, Connectors). Connect Atlassian too if you want the Jira features. The board uses only claude.ai connectors, never a local MCP server.
+- Claude Code signed in with a claude.ai account, with Slack connected through the claude.ai Slack connector (Settings, Connectors) or the official Slack plugin `slack@claude-plugins-official`. Connect Atlassian on claude.ai too if you want the Jira features. Apart from the Slack plugin, the board uses only claude.ai connectors, never a local MCP server.
 - Node.js 24 or newer on your `PATH`. The board needs no `npm install`.
 
 ## Install
