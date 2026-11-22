@@ -58,7 +58,7 @@ const DRAFT_MODEL = "sonnet";
 const SUMMARY_MODEL = "haiku";
 const SEARCH_TOOL = "slack_search_public_and_private";
 const BOARD_TOOL = "take_request";
-const BOARD_SERVER_PREFIX = "plugin_slack-board_";
+const BOARD_SERVER_KEY = "board";
 const JIRA_TOOL = "getJiraIssue";
 const CURRENT_USER = /user_id is (U[A-Z0-9]+)/;
 const DEFAULT_TONE_FILE = "~/.claude/skills/tone-of-voice/SKILL.md";
@@ -101,20 +101,17 @@ const settingsFrom = (options: Record<string, unknown>): Settings => {
   };
 };
 
-const boardServerIn = (toolNames: string[]): string => {
-  const board = toolNames.find(
-    (name) => name.startsWith(`mcp__${BOARD_SERVER_PREFIX}`) && name.endsWith(`__${BOARD_TOOL}`),
-  );
-  if (board === undefined)
-    throw new Error("The slack-board MCP server is not connected in this session");
-  return board.slice("mcp__".length, -`__${BOARD_TOOL}`.length);
+const connectBoard = async ($: EngineInterface): Promise<string> => {
+  const board = await $.mcp.connect(BOARD_SERVER_KEY);
+  if (!board.isConnected) throw new Error(board.message);
+  return board.server;
 };
 
 const resolveServers = async ($: EngineInterface): Promise<Servers> => {
   if (cachedServers !== null) return cachedServers;
+  const board = await connectBoard($);
   const tools = await $.tool.list();
   const names = tools.map((tool) => tool.name);
-  const board = boardServerIn(names);
   const slack = connectorServer(names, SEARCH_TOOL);
   if (slack === null)
     throw new Error(
@@ -614,7 +611,7 @@ export const register: Register = (on, options) => {
   });
 
   on("command.run", { command: "board" }, async ($) => {
-    const board = boardServerIn((await $.tool.list()).map((tool) => tool.name));
+    const board = await connectBoard($);
     await $.process.run(["open", await callText($, board, "board_url", {})]);
     return { text: "The Slack Board is open in your browser." };
   }).catch((_$, _e, next) => ({

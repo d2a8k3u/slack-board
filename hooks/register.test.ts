@@ -7,13 +7,9 @@ const BOARD_COMMAND: CommandRunInput = {
   origin: { kind: "composer" },
   presentation: { isFullscreen: false, columns: 80 },
 };
-const BOARD_SERVER = "plugin_slack-board_board";
+const BOARD_SERVER_KEY = "board";
+const BOARD_SERVER = "plugin:slack-board:board";
 const BOARD_URL = "http://127.0.0.1:4747/#token=test-token";
-const BOARD_TOOLS: ToolInfo[] = ["take_request", "board_url"].map((tool) => ({
-  name: `mcp__${BOARD_SERVER}__${tool}`,
-  description: "",
-  mcp: true,
-}));
 const OPENED: ProcessRunResult = {
   exitCode: 0,
   stdout: "",
@@ -38,7 +34,6 @@ const CONNECTOR_TOOLS: ToolInfo[] = [
   { name: CREATE_PAGE, description: "", mcp: true },
 ];
 const SESSION_TOOLS: ToolInfo[] = [
-  ...BOARD_TOOLS,
   ...CONNECTOR_TOOLS,
   { name: "Bash", description: "", mcp: false },
 ];
@@ -97,6 +92,15 @@ const boardServerAnswer = (server: string, tool: string): McpToolResult =>
     ? textResult(BOARD_URL)
     : textResult(`unknown tool ${server}/${tool}`, true);
 
+const connectsBoard = (on: On): void => {
+  on("mcp.connect", (_, e) => ({
+    value:
+      e.server === BOARD_SERVER_KEY
+        ? { isConnected: true, server: BOARD_SERVER }
+        : { isConnected: false, reason: "unlisted", message: `${e.server} is not listed` },
+  }));
+};
+
 type Call = { server: string; tool: string; args: Record<string, unknown> };
 
 const startBoard = async (
@@ -116,6 +120,7 @@ const startBoard = async (
   on("command.register", () => ({ value: { command: "board" } }));
   on("session.id", () => ({ value: "session-1" }));
   on("tool.list", () => ({ value: SESSION_TOOLS }));
+  connectsBoard(on);
   on("tool.check", () => ({ decision: "ask" }));
   on("ui.status", (_, e) => {
     statuses.push(e.text);
@@ -149,9 +154,10 @@ const startBoard = async (
   return { finished, connectorCalls, registered, spawned, statuses };
 };
 
-test("/board opens the board when no Slack connector is connected", async ($, on) => {
+test("/board opens the board right after session start, before any tool is listed", async ($, on) => {
   const opened: (readonly string[])[] = [];
-  on("tool.list", () => ({ value: BOARD_TOOLS }));
+  on("tool.list", () => ({ value: [] }));
+  connectsBoard(on);
   on("mcp.call", (_, e) => ({ value: boardServerAnswer(e.server, e.tool) }));
   on("process.run", (_, e) => {
     opened.push(e.argv);
@@ -164,14 +170,13 @@ test("/board opens the board when no Slack connector is connected", async ($, on
   expect(result.text).toBe("The Slack Board is open in your browser.");
 });
 
-test("/board says why it cannot open the board", async ($, on) => {
-  on("tool.list", () => ({ value: [] }));
+test("/board says why the board server did not connect", async ($, on) => {
+  const failure = "The board server exited before it answered";
+  on("mcp.connect", () => ({ value: { isConnected: false, reason: "failed", message: failure } }));
 
   const result = await $.command.run(BOARD_COMMAND);
 
-  expect(result.text).toBe(
-    "Slack Board: The slack-board MCP server is not connected in this session",
-  );
+  expect(result.text).toBe(`Slack Board: ${failure}`);
 });
 
 test(
