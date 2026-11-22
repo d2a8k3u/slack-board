@@ -4,11 +4,11 @@
 
 The plugin has three parts, all on your machine and all started by Claude Code:
 
-- A hooks module inside Claude Code. It syncs Slack through the claude.ai Slack connector or the official Slack plugin, asks Claude for drafts, rankings and summaries, runs your prompts from Actions as a Claude agent, runs the steps you approve through your connectors, and sends the notifications.
+- A hooks module inside Claude Code. It syncs Slack through the claude.ai Slack connector or the official Slack plugin, asks Claude for drafts, rankings and summaries, runs your prompts from Actions as a Claude agent, and runs the steps you approve through your connectors.
 - A small server that Claude Code starts as the plugin's MCP server. It keeps the board in a SQLite file and serves the board page on 127.0.0.1.
-- The board page in your browser.
+- The board page in your browser. It shows the notifications.
 
-The hooks module and the server talk over MCP. When several Claude Code sessions are open, each starts its own copy; they share one database, only one of them syncs at a time, and each request you make is handled by exactly one of them, so each notification comes once.
+The hooks module and the server talk over MCP. When several Claude Code sessions are open, each starts its own copy; they share one database, only one of them syncs at a time, and each request you make is handled by exactly one of them.
 
 ## What Claude is asked
 
