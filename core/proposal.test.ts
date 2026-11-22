@@ -98,9 +98,9 @@ test("accepts a call of a claude.ai connector tool with its exact input, and ref
   assert.match(rejection(call(notion, sized(MAX_TOOL_INPUT_CHARS + 1))), /8000/);
   assert.match(
     rejection(call("mcp__plugin_slack-board_board__finish_request", {})),
-    /not a tool of a claude\.ai connector/,
+    /not a connector tool/,
   );
-  assert.match(rejection(call("Bash", { command: "ls" })), /not a tool of a claude\.ai connector/);
+  assert.match(rejection(call("Bash", { command: "ls" })), /not a connector tool/);
   assert.match(rejection(call(notion, ["Notes"])), /input/);
 });
 

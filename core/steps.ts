@@ -29,7 +29,7 @@ export const answersConversation = (steps: Step[]): boolean =>
 
 const connectorCall = (tool: string, input: Record<string, unknown>): ToolCall => {
   const parts = connectorToolParts(tool);
-  if (parts === null) throw new Error(`${tool} is not a tool of a claude.ai connector`);
+  if (parts === null) throw new Error(`${tool} is not a connector tool`);
   return { tool: parts.tool, args: input };
 };
 
