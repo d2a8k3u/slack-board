@@ -1002,6 +1002,21 @@ async function requestNotifications() {
   renderNotifyButton();
 }
 
+const isPermissionOpen = () => notificationsSupported() && Notification.permission === "default";
+
+async function askForNotificationsOnOpen() {
+  if (!isPermissionOpen()) return;
+  await requestNotifications();
+  if (!isPermissionOpen()) return;
+  const askOnFirstUse = () => {
+    document.removeEventListener("pointerdown", askOnFirstUse, true);
+    document.removeEventListener("keydown", askOnFirstUse, true);
+    if (isPermissionOpen()) void requestNotifications().catch(reportDefect);
+  };
+  document.addEventListener("pointerdown", askOnFirstUse, true);
+  document.addEventListener("keydown", askOnFirstUse, true);
+}
+
 function forgetMissingCards() {
   const present = new Set(board.cards.map((card) => card.key));
   const cardStores = [
@@ -3063,7 +3078,10 @@ function start() {
   applyTheme();
   board.token = takeFragmentToken() ?? readStoredToken();
   if (board.token === null) showSignedOut();
-  else showApp();
+  else {
+    showApp();
+    void askForNotificationsOnOpen().catch(reportDefect);
+  }
 }
 
 start();
