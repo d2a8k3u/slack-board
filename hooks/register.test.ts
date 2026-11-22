@@ -110,12 +110,17 @@ const startBoard = async (
   const connectorCalls: Call[] = [];
   const registered: Record<string, unknown>[] = [];
   const spawned: { subagent_type?: unknown; prompt?: unknown }[] = [];
+  const statuses: (string | undefined)[] = [];
   const queue = [...requests];
   on("session.start", (_, e) => ({ cwd: e.cwd }));
   on("command.register", () => ({ value: { command: "board" } }));
   on("session.id", () => ({ value: "session-1" }));
   on("tool.list", () => ({ value: SESSION_TOOLS }));
   on("tool.check", () => ({ decision: "ask" }));
+  on("ui.status", (_, e) => {
+    statuses.push(e.text);
+    return { value: undefined };
+  });
   on("agent.register", (_, e) => {
     registered.push(e as unknown as Record<string, unknown>);
     return { value: { agent: ACTION_AGENT } };
@@ -133,7 +138,7 @@ const startBoard = async (
       return { value: textResult(JSON.stringify(queue.shift() ?? null)) };
     if (e.tool === "finish_request") {
       finished.push({ id: e.args.id, outcome: e.args.outcome });
-      return { value: textResult('"ok"') };
+      return { value: textResult("ok") };
     }
     if (e.tool === "begin_sync")
       return { value: textResult(JSON.stringify({ granted: false, after: 0, startedAt: "" })) };
@@ -141,7 +146,7 @@ const startBoard = async (
   });
   await $.session.start({ cwd: "/", surface: "desktop", isInteractive: true } as never);
   await clock.advance(WORKER_TICK_MS);
-  return { finished, connectorCalls, registered, spawned };
+  return { finished, connectorCalls, registered, spawned, statuses };
 };
 
 test("/board opens the board when no Slack connector is connected", async ($, on) => {
@@ -218,6 +223,15 @@ test("runs an approved call of a connector tool with exactly the input that was 
     { server: NOTION, tool: "notion-create-pages", args: { title: "Notes", body: "PROJ-1" } },
   ]);
   expect(board.finished).toEqual([{ id: 8, outcome: { ok: true } }]);
+});
+
+test("a finished request leaves no error on the status line", async ($, on) => {
+  const board = await startBoard($, on, [
+    { id: 10, kind: "execute", input: { proposal: { summary: "Nothing", steps: [] } }, card: CARD },
+  ]);
+
+  expect(board.finished).toEqual([{ id: 10, outcome: { ok: true } }]);
+  expect(board.statuses).toEqual([]);
 });
 
 test("reads a thread from Slack and hands its messages to the board", async ($, on) => {
