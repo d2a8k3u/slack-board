@@ -5,7 +5,9 @@ import {
   excerptRanges,
   groupCards,
   highlightParts,
+  isScrolledToEnd,
   matchesFilters,
+  SCROLL_END_TOLERANCE_PX,
   searchCards,
 } from "./board-view.js";
 
@@ -256,4 +258,14 @@ test("splits text into marked and plain parts, merging ranges that touch or over
     ],
   );
   assert.deepEqual(highlightParts("plain", []), [{ text: "plain", match: false }]);
+});
+
+test("counts a list as scrolled to its end only within the tolerance, so a reader who scrolled up keeps their place", () => {
+  const listScrolledUpBy = (pixels) => ({
+    scrollHeight: 1000,
+    clientHeight: 400,
+    scrollTop: 600 - pixels,
+  });
+  assert.equal(isScrolledToEnd(listScrolledUpBy(SCROLL_END_TOLERANCE_PX)), true);
+  assert.equal(isScrolledToEnd(listScrolledUpBy(SCROLL_END_TOLERANCE_PX + 1)), false);
 });

@@ -1403,11 +1403,12 @@
   }
   .action-turns {
     list-style: none;
-    margin: 0;
-    padding: 0;
+    margin: -6px;
+    padding: 6px;
     display: flex;
     flex-direction: column;
     gap: 10px;
+    max-height: min(360px, 40dvh);
   }
   .turn {
     display: flex;
@@ -1587,11 +1588,18 @@
 
   .messages {
     list-style: none;
-    margin: 0;
-    padding: 0;
+    margin: -6px;
+    padding: 6px;
     display: flex;
     flex-direction: column;
     gap: 6px;
+    max-height: min(480px, 50dvh);
+  }
+  .messages,
+  .action-turns {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
   }
   .message {
     display: flex;
@@ -2269,6 +2277,11 @@
     }
     .detail-place {
       font-size: 12px;
+    }
+    .messages,
+    .action-turns {
+      max-height: none;
+      overflow-y: visible;
     }
     .proposal-actions {
       margin: 0 -20px -20px;

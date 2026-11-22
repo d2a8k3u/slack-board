@@ -243,6 +243,11 @@ function mergedRanges(ranges) {
   return merged;
 }
 
+export const SCROLL_END_TOLERANCE_PX = 16;
+
+export const isScrolledToEnd = ({ scrollTop, clientHeight, scrollHeight }) =>
+  scrollHeight - clientHeight - scrollTop <= SCROLL_END_TOLERANCE_PX;
+
 export function highlightParts(text, ranges) {
   const parts = [];
   let consumed = 0;

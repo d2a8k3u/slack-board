@@ -8,6 +8,7 @@ import {
   GROUP_MODES,
   groupCards,
   highlightParts,
+  isScrolledToEnd,
   latestMessage,
   matchesFilters,
   NO_GROUP,
@@ -1755,7 +1756,11 @@ function buildActions(key, refs) {
     "Actions",
     refs.actionCount,
   );
-  refs.actionTurns = el("ol", { class: "action-turns", "aria-label": "Prompts and answers" });
+  refs.actionTurns = el("ol", {
+    class: "action-turns",
+    "aria-label": "Prompts and answers",
+    tabindex: "0",
+  });
   refs.actionWorking = el(
     "p",
     { class: "action-working", role: "status", hidden: true },
@@ -1959,7 +1964,12 @@ function updateDetailHead(refs, card) {
   setText(refs.ignoreError, requests.errors.get(ignoreScope) ?? "");
 }
 
+function scrollToEnd(list) {
+  list.scrollTop = list.scrollHeight;
+}
+
 function updateActions(refs, card) {
+  const turnsAtEnd = isScrolledToEnd(refs.actionTurns);
   refs.actionsToggle.setAttribute("aria-expanded", String(ui.actionsOpen));
   refs.actionsBody.hidden = !ui.actionsOpen;
   setText(refs.actionCount, String(card.actions.length));
@@ -1972,6 +1982,7 @@ function updateActions(refs, card) {
     JSON.stringify([card.actions, card.proposal?.steps.length ?? 0, ticketKeys]),
     () => turnNodes(card, ticketKeys),
   );
+  if (turnsAtEnd) scrollToEnd(refs.actionTurns);
   const scope = scopeOf("action", card.key);
   setDisabled(refs.actionSubmit, card.pending !== null || requests.inFlight.has(scope));
   setText(refs.actionError, requests.errors.get(scope) ?? "");
@@ -2021,6 +2032,7 @@ function turnNodes(card, ticketKeys) {
 function updateConversation(refs, card) {
   refs.conversation.hidden = card.kind === "compose";
   if (card.kind === "compose") return;
+  const messagesAtEnd = isScrolledToEnd(refs.messageList);
   const latestTs = latestMessage(card)?.ts ?? null;
   if (latestTs !== refs.historyTs) {
     refs.historyTs = latestTs;
@@ -2037,6 +2049,7 @@ function updateConversation(refs, card) {
     historyError === undefined ? "" : `${HISTORY_ERROR_PREFIX}${historyError}`,
   );
   updateThreadReplies(refs, card);
+  if (messagesAtEnd) scrollToEnd(refs.messageList);
 }
 
 const newMessagesDivider = () =>
