@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- The board notifies you when someone writes to you, when Claude's draft is ready or Claude answered a prompt in Actions, when a reply, reaction or approved step did not go out, and when checking Slack starts failing. While you use the board, a notification shows in its top right corner and opens the card on click. While the board tab is in the background, it comes from your browser. Notifications come only while the board tab is open.
+- The bell in the header shows whether your browser allows the board's notifications, and asks again if you dismissed the request.
+- `notify_new_messages`, `notify_claude_done`, `notify_send_failed` and `notify_sync_failed` turn each kind of notification off. All are on by default.
+- On a wider screen, a long conversation and a long Actions history scroll in their own box and open at the newest message. If you scrolled up to read, new messages leave your place as it is.
+- Sync now, Draft, Send as written, Approve, Discard, Run and the reaction buttons spin while their work runs. Sync now spins until the check is done.
+- Send as written sends your text without first showing it as a proposal to approve. If the send fails, your text comes back on the card with the error.
+- `/board` right after Claude Code starts opens the board instead of saying `Slack Board: The slack-board MCP server is not connected in this session`.
+- The board tab has an icon.
+
 ## 0.2.2
 
 - The board works with the official Slack plugin `slack@claude-plugins-official` as well as the claude.ai Slack connector. A session where Claude Code loads the plugin instead of the connector syncs again instead of showing `Slack Board sync failed: Connect Slack on claude.ai (Settings, Connectors)`.
