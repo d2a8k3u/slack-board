@@ -243,6 +243,35 @@ function mergedRanges(ranges) {
   return merged;
 }
 
+const changeOf = (earlier, card) => {
+  if (card.error !== null && card.error !== earlier.error)
+    return { kind: "failed", card, work: earlier.pending?.kind ?? null };
+  if (card.proposal !== null && earlier.proposal === null) return { kind: "proposal", card };
+  if (card.actions.length > earlier.actions.length && card.actions.at(-1)?.author === "claude")
+    return { kind: "answered", card };
+  return null;
+};
+
+export function cardChanges(previous, next) {
+  const before = new Map(previous.map((card) => [card.key, card]));
+  const after = new Map(next.map((card) => [card.key, card]));
+  const sent = previous
+    .filter((card) => {
+      const now = after.get(card.key);
+      return (
+        card.pending?.kind === "execute" &&
+        (now === undefined || (now.pending === null && now.error === null))
+      );
+    })
+    .map((card) => ({ kind: "sent", card }));
+  const changed = next.flatMap((card) => {
+    const earlier = before.get(card.key);
+    const change = earlier === undefined ? null : changeOf(earlier, card);
+    return change === null ? [] : [change];
+  });
+  return [...sent, ...changed];
+}
+
 export const CONTROLS = {
   draft: "draft",
   send: "send",

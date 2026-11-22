@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   activeFilters,
+  cardChanges,
   excerptRanges,
   groupCards,
   highlightParts,
@@ -259,6 +260,32 @@ test("splits text into marked and plain parts, merging ranges that touch or over
     ],
   );
   assert.deepEqual(highlightParts("plain", []), [{ text: "plain", match: false }]);
+});
+
+test("tells what happened to each card between two board states", () => {
+  const base = { error: null, proposal: null, pending: null, actions: [] };
+  const sending = card("SENT", { ...base, pending: { kind: "execute", status: "working" } });
+  const drafting = card("DRAFT", { ...base, pending: { kind: "propose", status: "working" } });
+  const asking = card("ASK", { ...base, pending: { kind: "act", status: "working" } });
+  const quiet = card("QUIET", base);
+  const failing = card("FAIL", { ...base, pending: { kind: "propose", status: "working" } });
+  const before = [sending, drafting, asking, quiet, failing];
+  const after = [
+    { ...drafting, pending: null, proposal: { summary: "Reply", steps: [] } },
+    { ...asking, pending: null, actions: [{ author: "claude", text: "PROJ-1", isFailed: false }] },
+    quiet,
+    { ...failing, pending: null, error: "No reply" },
+  ];
+
+  assert.deepEqual(
+    cardChanges(before, after).map((change) => [change.kind, change.card.key, change.work]),
+    [
+      ["sent", "SENT", undefined],
+      ["proposal", "DRAFT", undefined],
+      ["answered", "ASK", undefined],
+      ["failed", "FAIL", "propose"],
+    ],
+  );
 });
 
 test("spins the button that started the card's work, and guesses from the work when no button is known", () => {

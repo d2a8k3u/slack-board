@@ -3,6 +3,7 @@ import {
   ANY,
   activeFilters,
   CONTROLS,
+  cardChanges,
   DIRECT,
   DIRECT_LABEL,
   excerptRanges,
@@ -847,7 +848,7 @@ function applyState(state) {
   board.polish = state.polish;
   board.loaded = true;
   board.connectionError = null;
-  announce(stateChanges(previous, state.cards));
+  announce(announcementsOf(cardChanges(previous, state.cards)));
   forgetMissingCards();
   if (ui.openKey !== null && findCard(ui.openKey) === undefined) closeDetail();
   rerunLookupMerge();
@@ -855,29 +856,15 @@ function applyState(state) {
   openPendingCard();
 }
 
-function stateChanges(previous, next) {
-  const before = new Map(previous.map((card) => [card.key, card]));
-  const after = new Map(next.map((card) => [card.key, card]));
-  const sent = previous.filter((card) => {
-    const now = after.get(card.key);
-    return (
-      card.pending?.kind === "execute" &&
-      (now === undefined || (now.pending === null && now.error === null))
-    );
-  });
-  const changed = next.flatMap((card) => {
-    const earlier = before.get(card.key);
-    if (earlier === undefined) return [];
-    if (card.error !== null && card.error !== earlier.error)
-      return [`Failed: ${card.title}. ${card.error}`];
-    if (card.proposal !== null && earlier.proposal === null)
-      return [`Proposal ready: ${card.title}`];
-    if (card.actions.length > earlier.actions.length && card.actions.at(-1)?.author === "claude")
-      return [`Claude answered: ${card.title}`];
-    return [];
-  });
-  return [...sent.map((card) => `Sent: ${card.title}`), ...changed];
-}
+const ANNOUNCEMENTS = {
+  sent: (card) => `Sent: ${card.title}`,
+  failed: (card) => `Failed: ${card.title}. ${card.error}`,
+  proposal: (card) => `Proposal ready: ${card.title}`,
+  answered: (card) => `Claude answered: ${card.title}`,
+};
+
+const announcementsOf = (changes) =>
+  changes.map((change) => ANNOUNCEMENTS[change.kind](change.card));
 
 function forgetMissingCards() {
   const present = new Set(board.cards.map((card) => card.key));
