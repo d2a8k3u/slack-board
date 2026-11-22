@@ -69,6 +69,6 @@ The board checks Slack every 5 minutes while any Claude Code session is open, an
 
 ## Notifications
 
-The board notifies you when someone writes to you, when Claude's proposal is ready or Claude answered a prompt, when a reply or approved step did not go out, and when checking Slack starts failing. While you use the board, a notification shows in its top right corner; click it to open the card. While the board tab is in the background, it comes as a system notification from your browser, once you press Turn on notifications in the header and allow it. Notifications come only while the board tab is open.
+The board notifies you when someone writes to you, when Claude's proposal is ready or Claude answered a prompt, when a reply or approved step did not go out, and when checking Slack starts failing. While you use the board, a notification shows in its top right corner; click it to open the card. While the board tab is in the background, it comes as a system notification from your browser: the board asks for that permission when it opens (Safari and Firefox on your first click), and Turn on notifications in the header asks again if you dismissed it. Notifications come only while the board tab is open.
 
 A new message shows who wrote, where, and the start of the text. When more than three conversations have news at once, one notification sums them up. The first sync of a new board stays quiet. Each kind can be turned off in the [settings](settings.md).
