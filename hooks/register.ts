@@ -9,6 +9,13 @@ import {
 import { connectorServer, connectorToolParts } from "../core/connectors.ts";
 import { threadTargetFor } from "../core/inbox.ts";
 import { readTicketDetails } from "../core/jira.ts";
+import {
+  finishNotice,
+  type Notice,
+  type NoticeEvent,
+  newMessageNotices,
+  syncFailureNotice,
+} from "../core/notifications.ts";
 import { parsePriorities } from "../core/priority.ts";
 import {
   actionAgentPrompt,
@@ -29,8 +36,10 @@ import type {
   BoardCard,
   ClaimedRequest,
   FinishOutcome,
+  NewMessage,
   Proposal,
   RankingCard,
+  RequestKind,
   SlackHit,
   Step,
 } from "../core/types.ts";
@@ -42,7 +51,10 @@ type Settings = {
   lookbackDays: number;
   toneFile: string;
   stylePrompt: string;
+  notices: Record<NoticeEvent, boolean>;
 };
+type NoticeCard = { key: string; title: string };
+type RunningAction = ActionRun & { card: NoticeCard };
 type Servers = { board: string; slack: string; jira: string | null; me: string };
 type SyncWindow = { granted: boolean; after: number; startedAt: string };
 
@@ -73,7 +85,8 @@ let isWorking = false;
 let isSyncing = false;
 let syncDueAt = Date.now() + FIRST_SYNC_DELAY_MS;
 let actionAgentType: string | null = null;
-const runningActions = new Map<string, ActionRun>();
+let isSyncFailing = false;
+const runningActions = new Map<string, RunningAction>();
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -98,7 +111,35 @@ const settingsFrom = (options: Record<string, unknown>): Settings => {
     lookbackDays: numberOr(options.lookback_days, 7, 1),
     toneFile: textOr(options.tone_of_voice_file, DEFAULT_TONE_FILE),
     stylePrompt: textOr(options.style_prompt, ""),
+    notices: {
+      newMessages: options.notify_new_messages !== false,
+      claudeDone: options.notify_claude_done !== false,
+      sendFailed: options.notify_send_failed !== false,
+      syncFailed: options.notify_sync_failed !== false,
+    },
   };
+};
+
+const notifyAll = async (
+  $: EngineInterface,
+  settings: Settings,
+  notices: Notice[],
+): Promise<void> => {
+  for (const notice of notices) {
+    if (!settings.notices[notice.event]) continue;
+    await $.ui.notify(notice.text, { title: notice.title, key: notice.key }).catch(reportStatus($));
+  }
+};
+
+const notifyFinished = (
+  $: EngineInterface,
+  settings: Settings,
+  kind: RequestKind,
+  outcome: FinishOutcome,
+  card: NoticeCard | null,
+): Promise<void> => {
+  const notice = card === null ? null : finishNotice(kind, outcome, card);
+  return notifyAll($, settings, notice === null ? [] : [notice]);
 };
 
 const connectBoard = async ($: EngineInterface): Promise<string> => {
@@ -207,7 +248,7 @@ const sync = async (
   settings: Settings,
   holder: string,
   isForced: boolean,
-): Promise<void> => {
+): Promise<NewMessage[]> => {
   const servers = await resolveServers($);
   const window = await callBoard<SyncWindow>($, servers, "begin_sync", {
     holder,
@@ -215,22 +256,38 @@ const sync = async (
     lookbackDays: settings.lookbackDays,
     force: isForced,
   });
-  if (!window.granted) return;
+  if (!window.granted) return [];
   try {
     const hits: SlackHit[] = [];
     for (const query of forMeQueries(servers.me))
       hits.push(...(await searchAll($, servers, query, window.after)));
     const myHits = await searchAll($, servers, { filters: `from:<@${servers.me}>` }, window.after);
-    await callBoard($, servers, "ingest", {
+    const { news } = await callBoard<{ news: NewMessage[] }>($, servers, "ingest", {
       hits,
       myHits,
       me: servers.me,
       syncedAt: window.startedAt,
     });
+    return news;
   } catch (error) {
     await callText($, servers.board, "fail_sync", { error: messageOf(error) });
     throw error;
   }
+};
+
+const syncAndNotify = async (
+  $: EngineInterface,
+  settings: Settings,
+  holder: string,
+  isForced: boolean,
+): Promise<void> => {
+  const news = await sync($, settings, holder, isForced).catch(async (error: unknown) => {
+    if (!isSyncFailing) await notifyAll($, settings, [syncFailureNotice(messageOf(error))]);
+    isSyncFailing = true;
+    throw error;
+  });
+  isSyncFailing = false;
+  await notifyAll($, settings, newMessageNotices(news));
 };
 
 const readToneFile = async ($: EngineInterface, settings: Settings): Promise<string | null> => {
@@ -333,26 +390,30 @@ const startAction = async (
     requestId: request.id,
     startedAt: await $.clock.now(),
     tools: [],
+    card: { key: card.key, title: card.title },
   });
 };
 
 const finishAction = async (
   $: EngineInterface,
+  settings: Settings,
   agentId: string,
   outcome: (run: ActionRun) => FinishOutcome,
 ): Promise<void> => {
   const run = runningActions.get(agentId);
   if (run === undefined) return;
   runningActions.delete(agentId);
+  const result = outcome(run);
   await callText($, (await resolveServers($)).board, "finish_request", {
     id: run.requestId,
-    outcome: outcome(run),
+    outcome: result,
   });
+  await notifyFinished($, settings, "act", result, run.card);
 };
 
-const expireActions = async ($: EngineInterface): Promise<void> => {
+const expireActions = async ($: EngineInterface, settings: Settings): Promise<void> => {
   for (const agentId of expiredRuns(runningActions, await $.clock.now()))
-    await finishAction($, agentId, () => ({
+    await finishAction($, settings, agentId, () => ({
       ok: false,
       error: `Claude did not finish within ${ACTION_LIMIT_MINUTES} minutes`,
     }));
@@ -525,7 +586,7 @@ const handle = async (
     case "lookup":
       return lookup($, servers, request);
     case "sync":
-      return sync($, settings, worker, true).then(() => ({ ok: true }));
+      return syncAndNotify($, settings, worker, true).then(() => ({ ok: true }));
   }
 };
 
@@ -539,8 +600,9 @@ const work = async ($: EngineInterface, settings: Settings, worker: string): Pro
     const outcome = await handle($, servers, settings, worker, request).catch(
       (error: unknown): FinishOutcome => ({ ok: false, error: messageOf(error) }),
     );
-    if (outcome !== STARTED)
-      await callText($, servers.board, "finish_request", { id: request.id, outcome });
+    if (outcome === STARTED) return;
+    await callText($, servers.board, "finish_request", { id: request.id, outcome });
+    await notifyFinished($, settings, request.kind, outcome, request.card);
   } catch (error) {
     cachedServers = null;
     $.ui.status(`Slack Board: ${messageOf(error)}`);
@@ -557,7 +619,7 @@ const syncWhenDue = async (
   if (isSyncing || Date.now() < syncDueAt) return;
   isSyncing = true;
   try {
-    await sync($, settings, holder, false);
+    await syncAndNotify($, settings, holder, false);
     syncDueAt = nextSyncAt(Date.now(), "synced", settings.syncMs);
     $.ui.status(undefined);
   } catch (error) {
@@ -581,14 +643,14 @@ export const register: Register = (on, options) => {
     $.clock.every(WORKER_TICK_MS, () => {
       void work($, settings, worker);
       void syncWhenDue($, settings, worker);
-      void expireActions($).catch(reportStatus($));
+      void expireActions($, settings).catch(reportStatus($));
     });
     return next(e);
   });
 
   on("turn.complete", async ($, e, next) => {
     if (e.agentId !== undefined && runningActions.has(e.agentId))
-      await finishAction($, e.agentId, (run) =>
+      await finishAction($, settings, e.agentId, (run) =>
         actionOutcome(e, run.tools, settings.projectKeys),
       ).catch(reportStatus($));
     return next(e);

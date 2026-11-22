@@ -102,12 +102,14 @@ const connectsBoard = (on: On): void => {
 };
 
 type Call = { server: string; tool: string; args: Record<string, unknown> };
+type Notice = { key?: string; title?: string; text: string };
 
 const startBoard = async (
   $: { session: { start: (e: never) => Promise<unknown> } },
   on: On,
   requests: unknown[],
   connectorAnswer: (call: Call) => McpToolResult = () => textResult("{}"),
+  boardAnswers: Partial<Record<string, McpToolResult>> = {},
 ) => {
   const clock = mock.clock(on);
   const finished: { id: unknown; outcome: unknown }[] = [];
@@ -115,7 +117,12 @@ const startBoard = async (
   const registered: Record<string, unknown>[] = [];
   const spawned: { subagent_type?: unknown; prompt?: unknown }[] = [];
   const statuses: (string | undefined)[] = [];
+  const notices: Notice[] = [];
   const queue = [...requests];
+  on("ui.notify", (_, e) => {
+    notices.push({ key: e.key, title: e.title, text: e.text });
+    return { value: { isSent: true, channel: "client" } };
+  });
   on("session.start", (_, e) => ({ cwd: e.cwd }));
   on("command.register", () => ({ value: { command: "board" } }));
   on("session.id", () => ({ value: "session-1" }));
@@ -139,6 +146,8 @@ const startBoard = async (
       connectorCalls.push({ server: e.server, tool: e.tool, args: e.args });
       return { value: connectorAnswer(e) };
     }
+    const answer = boardAnswers[e.tool];
+    if (answer !== undefined) return { value: answer };
     if (e.tool === "take_request")
       return { value: textResult(JSON.stringify(queue.shift() ?? null)) };
     if (e.tool === "finish_request") {
@@ -151,8 +160,35 @@ const startBoard = async (
   });
   await $.session.start({ cwd: "/", surface: "desktop", isInteractive: true } as never);
   await clock.advance(WORKER_TICK_MS);
-  return { finished, connectorCalls, registered, spawned, statuses };
+  return { clock, finished, connectorCalls, registered, spawned, statuses, notices };
 };
+
+const syncRequest = (id: number) => ({ id, kind: "sync", input: {}, card: null });
+const emptySearch = () => textResult(JSON.stringify({ results: "" }));
+const SYNC_GRANTED = textResult(
+  JSON.stringify({ granted: true, after: 0, startedAt: "2026-11-22T10:00:00.000Z" }),
+);
+const INGESTED_NEWS = textResult(
+  JSON.stringify({
+    cards: 1,
+    rankingBatches: 0,
+    news: [
+      {
+        cardKey: "D01",
+        kind: "dm",
+        title: "Ana Novak",
+        message: {
+          ts: "1795000000.000100",
+          authorId: "U_ANA",
+          authorName: "Ana Novak",
+          text: "Can you check PROJ-1?",
+          permalink: "",
+        },
+      },
+    ],
+  }),
+);
+const SYNCED_WITH_NEWS = { begin_sync: SYNC_GRANTED, ingest: INGESTED_NEWS };
 
 test("/board opens the board right after session start, before any tool is listed", async ($, on) => {
   const opened: (readonly string[])[] = [];
@@ -295,6 +331,80 @@ test("reads a thread from Slack and hands its messages to the board", async ($, 
           },
         ],
       },
+    },
+  ]);
+});
+
+test("notifies about the new messages a sync brought", async ($, on) => {
+  const board = await startBoard($, on, [syncRequest(11)], emptySearch, SYNCED_WITH_NEWS);
+
+  expect(board.finished).toEqual([{ id: 11, outcome: { ok: true } }]);
+  expect(board.notices).toEqual([
+    { key: "message:D01", title: "Ana Novak", text: "Can you check PROJ-1?" },
+  ]);
+});
+
+test(
+  "keeps quiet about new messages when that notification is turned off",
+  { options: { notify_new_messages: false } },
+  async ($, on) => {
+    const board = await startBoard($, on, [syncRequest(11)], emptySearch, SYNCED_WITH_NEWS);
+
+    expect(board.finished).toEqual([{ id: 11, outcome: { ok: true } }]);
+    expect(board.notices).toEqual([]);
+  },
+);
+
+test("notifies once when syncing starts failing, not on every retry", async ($, on) => {
+  const board = await startBoard($, on, [syncRequest(11), syncRequest(12)], emptySearch, {
+    begin_sync: textResult("Slack Board is locked", true),
+  });
+  await board.clock.advance(WORKER_TICK_MS);
+
+  expect(board.finished.map((entry) => entry.id)).toEqual([11, 12]);
+  expect(board.notices).toEqual([
+    {
+      key: "sync",
+      title: "Slack sync failed",
+      text: "begin_sync failed: Slack Board is locked",
+    },
+  ]);
+});
+
+test("notifies when an approved send fails", async ($, on) => {
+  const step = { type: "tool_call", tool: CREATE_PAGE, input: { title: "Notes" } };
+  const board = await startBoard(
+    $,
+    on,
+    [
+      {
+        id: 8,
+        kind: "execute",
+        input: { proposal: { summary: "Notes", steps: [step] } },
+        card: CARD,
+      },
+    ],
+    () => textResult("Notion is down", true),
+  );
+
+  expect(board.notices.map(({ key, title }) => ({ key, title }))).toEqual([
+    { key: "card:D01", title: "Ana Novak" },
+  ]);
+  expect(board.notices[0]?.text.startsWith("Not sent: Step 1 of 1 failed, nothing was sent")).toBe(
+    true,
+  );
+});
+
+test("notifies when Claude cannot work on a prompt", STYLE, async ($, on) => {
+  const board = await startBoard($, on, [
+    { id: 7, kind: "act", input: { text: "Find the related ticket" }, card: CARD },
+  ]);
+
+  expect(board.notices).toEqual([
+    {
+      key: "card:D01",
+      title: "Ana Novak",
+      text: "Claude could not finish your prompt: Claude Code did not start the agent",
     },
   ]);
 });

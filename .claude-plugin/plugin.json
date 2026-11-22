@@ -65,6 +65,30 @@
       "title": "First sync lookback (days)",
       "description": "How far back the first sync looks for messages",
       "default": 7
+    },
+    "notify_new_messages": {
+      "type": "boolean",
+      "title": "Notify about new messages",
+      "description": "A notification when someone writes to you: who, where and the start of the message",
+      "default": true
+    },
+    "notify_claude_done": {
+      "type": "boolean",
+      "title": "Notify when Claude is done",
+      "description": "A notification when Claude's draft is ready to approve or Claude answered a prompt in Actions",
+      "default": true
+    },
+    "notify_send_failed": {
+      "type": "boolean",
+      "title": "Notify when a send fails",
+      "description": "A notification when a reply, reaction or approved step did not go out",
+      "default": true
+    },
+    "notify_sync_failed": {
+      "type": "boolean",
+      "title": "Notify when syncing fails",
+      "description": "A notification when checking Slack starts failing, not on every retry",
+      "default": true
     }
   }
 }
