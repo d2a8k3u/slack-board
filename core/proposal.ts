@@ -75,7 +75,7 @@ const editableFields = (step: Fields): JiraEditableFields => {
 
 const connectorTool = (step: Fields): string => {
   const tool = text(step, "tool");
-  if (connectorToolParts(tool) === null) reject(`${tool} is not a tool of a claude.ai connector`);
+  if (connectorToolParts(tool) === null) reject(`${tool} is not a connector tool`);
   return tool;
 };
 

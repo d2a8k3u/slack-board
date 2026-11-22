@@ -1,6 +1,10 @@
 const MCP_PREFIX = "mcp__";
 const CLAUDE_AI_SERVER =
   /^(claude_ai_[A-Za-z0-9_-]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+const SLACK_PLUGIN_SERVER = "plugin_slack_slack";
+
+const isConnectorServer = (server: string): boolean =>
+  CLAUDE_AI_SERVER.test(server) || server === SLACK_PLUGIN_SERVER;
 
 const serverOf = (toolName: string, tool: string): string | null => {
   const suffix = `__${tool}`;
@@ -12,10 +16,10 @@ const MCP_TOOL = /^mcp__(.+?)__(.+)$/;
 
 export const connectorToolParts = (name: string): { server: string; tool: string } | null => {
   const [, server = "", tool = ""] = MCP_TOOL.exec(name) ?? [];
-  return CLAUDE_AI_SERVER.test(server) ? { server, tool } : null;
+  return isConnectorServer(server) ? { server, tool } : null;
 };
 
 export const connectorServer = (toolNames: string[], tool: string): string | null =>
   toolNames
     .map((name) => serverOf(name, tool))
-    .find((server): server is string => server !== null && CLAUDE_AI_SERVER.test(server)) ?? null;
+    .find((server): server is string => server !== null && isConnectorServer(server)) ?? null;

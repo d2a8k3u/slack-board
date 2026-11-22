@@ -118,7 +118,7 @@ const resolveServers = async ($: EngineInterface): Promise<Servers> => {
   const slack = connectorServer(names, SEARCH_TOOL);
   if (slack === null)
     throw new Error(
-      "Connect Slack on claude.ai (Settings, Connectors); the board uses only claude.ai connectors",
+      "Connect Slack on claude.ai (Settings, Connectors) or install the slack@claude-plugins-official plugin",
     );
   const me = CURRENT_USER.exec(
     tools.find((tool) => tool.name === `mcp__${slack}__${SEARCH_TOOL}`)?.description ?? "",
@@ -392,7 +392,7 @@ const history = async (
 const stepServer = (step: Step, servers: Servers, settings: Settings): string => {
   if (step.type === "tool_call") {
     const parts = connectorToolParts(step.tool);
-    if (parts === null) throw new Error(`${step.tool} is not a tool of a claude.ai connector`);
+    if (parts === null) throw new Error(`${step.tool} is not a connector tool`);
     return parts.server;
   }
   return step.type.startsWith("slack_") ? servers.slack : jiraServer(servers, settings);
