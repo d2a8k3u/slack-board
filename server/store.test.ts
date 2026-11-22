@@ -103,6 +103,27 @@ test(
 );
 
 test(
+  "keeps the latest new messages for the board page until a later sync brings newer ones",
+  withStores((store) => {
+    assert.equal(store.latestNews(), null);
+    ingest(store, [hit({})]);
+    assert.equal(store.latestNews(), null);
+
+    const later = hit({ ts: "1795000000.000200", text: "And PROJ-13?" });
+    ingest(store, [hit({}), later], [], LATER(60_000));
+    ingest(store, [hit({}), later], [], LATER(120_000));
+
+    assert.deepEqual(
+      {
+        at: store.latestNews()?.at,
+        texts: store.latestNews()?.items.map((entry) => entry.message.text),
+      },
+      { at: LATER(60_000).toISOString(), texts: ["And PROJ-13?"] },
+    );
+  }),
+);
+
+test(
   "shows ticket details once fetched and makes a summary only when asked",
   withStores((store) => {
     const details = {

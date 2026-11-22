@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { checkProposal, directProposal, SLACK_TEXT_LIMIT } from "../core/proposal.ts";
+import type { NotifySettings } from "../core/types.ts";
 import type { BoardStore } from "./store.ts";
 
 export type BoardServerOptions = {
@@ -11,6 +12,7 @@ export type BoardServerOptions = {
   projectKeys: string[];
   webRoot: string;
   polish: boolean;
+  notify: NotifySettings;
 };
 
 const MAX_BODY_BYTES = 64 * 1024;
@@ -99,7 +101,7 @@ const guardApi = (incoming: IncomingMessage, port: number, token: string): void 
     refuse(401, "Open the board with the /board command");
 };
 
-const routesFor = ({ store, projectKeys, polish }: BoardServerOptions): Route[] => {
+const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): Route[] => {
   const cardExists = (key: string): void => {
     if (store.card(key) === null) refuse(404, "This card is gone");
   };
@@ -126,7 +128,8 @@ const routesFor = ({ store, projectKeys, polish }: BoardServerOptions): Route[] 
           cards: store.cards(),
           sync: store.syncState(),
           lookup: store.lookupState(),
-          settings: { polish },
+          news: store.latestNews(),
+          settings: { polish, notify },
         },
       }),
     },

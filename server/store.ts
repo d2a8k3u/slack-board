@@ -17,6 +17,7 @@ import type {
   InboxCard,
   LookupState,
   NewMessage,
+  NewsBatch,
   Priority,
   Proposal,
   RankingCard,
@@ -291,6 +292,10 @@ export class BoardStore {
     };
   }
 
+  latestNews(): NewsBatch | null {
+    return this.#meta<NewsBatch>("news");
+  }
+
   lookupState(): LookupState | null {
     return this.#meta<LookupState>("lookup");
   }
@@ -333,7 +338,9 @@ export class BoardStore {
       this.#setMeta("last_sync_at", iso(sync.syncedAt));
       this.#setMeta("me", sync.me);
       this.#db.prepare(`DELETE FROM meta WHERE key = 'last_sync_error'`).run();
-      return isFirstSync ? [] : newMessages(known, merged);
+      const news = isFirstSync ? [] : newMessages(known, merged);
+      if (news.length > 0) this.#setMeta("news", { at: iso(sync.syncedAt), items: news });
+      return news;
     });
   }
 

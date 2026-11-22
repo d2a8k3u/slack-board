@@ -10,6 +10,8 @@ import { BoardStore } from "./store.ts";
 
 type Reply = { status: number; body: string };
 
+const NOTIFY = { newMessages: true, claudeDone: false, sendFailed: true, syncFailed: false };
+
 const send = (
   port: number,
   path: string,
@@ -49,6 +51,7 @@ const withBoard =
       projectKeys: ["PROJ"],
       webRoot: folder,
       polish: true,
+      notify: NOTIFY,
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as AddressInfo;
@@ -99,6 +102,7 @@ test(
       "cards",
       "sync",
       "lookup",
+      "news",
       "settings",
     ]);
   }),
@@ -233,13 +237,14 @@ test(
 );
 
 test(
-  "sends my own text as written, without a Claude step, and tells the page whether polishing is on",
+  "sends my own text as written, without a Claude step, and tells the page its settings and news",
   withBoard(async (port, token, store) => {
     seedCard(store);
     const auth = { "x-board-token": token };
 
     const state = JSON.parse((await send(port, "/api/state", { headers: auth })).body);
-    assert.deepEqual(state.settings, { polish: true });
+    assert.deepEqual(state.settings, { polish: true, notify: NOTIFY });
+    assert.equal(state.news, null);
     assert.equal(
       (
         await send(port, "/api/cards/D01/send", {

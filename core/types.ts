@@ -66,6 +66,15 @@ export type NewMessage = {
   message: CardMessage;
 };
 
+export type NewsBatch = { at: string; items: NewMessage[] };
+
+export type NotifySettings = {
+  newMessages: boolean;
+  claudeDone: boolean;
+  sendFailed: boolean;
+  syncFailed: boolean;
+};
+
 export type Step =
   | { type: "slack_reply"; text: string }
   | { type: "slack_reaction"; emoji: string }

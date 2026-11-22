@@ -13,7 +13,11 @@
       "env": {
         "BOARD_PORT": "${user_config.port}",
         "BOARD_JIRA_PROJECTS": "${user_config.jira_projects}",
-        "BOARD_POLISH": "${user_config.polish_replies}"
+        "BOARD_POLISH": "${user_config.polish_replies}",
+        "BOARD_NOTIFY_NEW_MESSAGES": "${user_config.notify_new_messages}",
+        "BOARD_NOTIFY_CLAUDE_DONE": "${user_config.notify_claude_done}",
+        "BOARD_NOTIFY_SEND_FAILED": "${user_config.notify_send_failed}",
+        "BOARD_NOTIFY_SYNC_FAILED": "${user_config.notify_sync_failed}"
       }
     }
   },
