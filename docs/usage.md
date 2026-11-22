@@ -31,6 +31,8 @@ A mention in a message shows the person's name. Click it to start a new message 
 
 Open a card. Conversation shows the whole thread or DM as Slack has it, up to its last 30 messages: other people on the left, your own messages on the right, and a "New since your last reply" line where the messages waiting for you start. The board reads it from Slack when you open the card and again when a new message arrives. Until that read is done, you see only the messages waiting for you.
 
+On a wider screen a long conversation scrolls in its own box and opens at the newest message. If you scroll up to read, new messages leave your place as it is. On a phone the whole card scrolls as one page.
+
 ## Reply
 
 1. Write what you want to say in the reply box, in any language and as roughly as you like.
@@ -50,6 +52,8 @@ Click any message in the conversation, yours included. A box opens under it: pre
 Open Actions at the top of the card and write a prompt the way you would in Claude Code, for example "find the ticket related to the one in this message" or "move PROJ-123 to review and comment that the fix is on staging". Press Run or Ctrl+Enter.
 
 Claude works on it with the conversation, the tickets on the card and the earlier prompts, using your claude.ai connectors and, when installed, the official Slack plugin. It answers in Actions and names the tools it read from. Tools that only read run right away. Anything that would change something (a Slack message, a Jira comment, a page in another tool) comes back as steps in Claude's proposal, and nothing runs until you approve them. A step that calls another connector's tool shows the exact input it will send.
+
+A long list of prompts and answers scrolls the same way as the conversation.
 
 Your prompts and Claude's answers stay on the card until it leaves the board.
 
