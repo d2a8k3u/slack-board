@@ -137,14 +137,18 @@ export const TOOLS: ToolDefinition[] = [
       required: ["hits", "myHits", "me", "syncedAt"],
     },
     run: (args, { store, projectKeys }) => {
-      store.ingest({
+      const news = store.ingest({
         hits: hits(args, "hits"),
         myHits: hits(args, "myHits"),
         me: text(args, "me"),
         projectKeys,
         syncedAt: new Date(text(args, "syncedAt")),
       });
-      return { cards: store.cards().length, rankingBatches: store.requestRanking(new Date()) };
+      return {
+        cards: store.cards().length,
+        rankingBatches: store.requestRanking(new Date()),
+        news,
+      };
     },
   },
   {

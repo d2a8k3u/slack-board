@@ -59,6 +59,13 @@ export type InboxCard = {
 
 export type IgnoredConversations = ReadonlyMap<string, string>;
 
+export type NewMessage = {
+  cardKey: string;
+  kind: ConversationKind;
+  title: string;
+  message: CardMessage;
+};
+
 export type Step =
   | { type: "slack_reply"; text: string }
   | { type: "slack_reaction"; emoji: string }

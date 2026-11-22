@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { conversationView } from "../core/conversation.ts";
-import { dropAnswered, mergeHits, peopleFromHits } from "../core/inbox.ts";
+import { dropAnswered, mergeHits, newMessages, peopleFromHits } from "../core/inbox.ts";
 import { answersConversation } from "../core/steps.ts";
 import { ticketKeys } from "../core/tickets.ts";
 import type {
@@ -16,6 +16,7 @@ import type {
   HistoryMessage,
   InboxCard,
   LookupState,
+  NewMessage,
   Priority,
   Proposal,
   RankingCard,
@@ -304,14 +305,16 @@ export class BoardStore {
     });
   }
 
-  ingest(sync: SyncInput): void {
-    this.#transaction(() => {
+  ingest(sync: SyncInput): NewMessage[] {
+    return this.#transaction(() => {
+      const isFirstSync = this.#meta<string>("last_sync_at") === null;
       this.#db
         .prepare("DELETE FROM ignored WHERE ignored_at < ?")
         .run(iso(new Date(sync.syncedAt.getTime() - IGNORED_KEEP_MS)));
       const rows = this.#db
         .prepare(`SELECT * FROM cards WHERE kind != 'compose'`)
         .all() as InboxRow[];
+      const known = rows.map(inboxCardOf);
       const before = new Map(rows.map((row) => [row.key, row]));
       const ignored = new Map(
         (
@@ -321,10 +324,7 @@ export class BoardStore {
           }[]
         ).map((row) => [row.key, row.last_ts]),
       );
-      const merged = dropAnswered(
-        mergeHits(rows.map(inboxCardOf), sync.hits, sync.me, ignored),
-        sync.myHits,
-      );
+      const merged = dropAnswered(mergeHits(known, sync.hits, sync.me, ignored), sync.myHits);
       for (const card of merged) this.#saveInboxCard(card, before.get(card.key), sync);
       const kept = new Set(merged.map((card) => card.key));
       for (const key of before.keys()) if (!kept.has(key)) this.#deleteCard(key);
@@ -333,6 +333,7 @@ export class BoardStore {
       this.#setMeta("last_sync_at", iso(sync.syncedAt));
       this.#setMeta("me", sync.me);
       this.#db.prepare(`DELETE FROM meta WHERE key = 'last_sync_error'`).run();
+      return isFirstSync ? [] : newMessages(known, merged);
     });
   }
 

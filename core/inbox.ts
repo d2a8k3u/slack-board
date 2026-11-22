@@ -2,6 +2,7 @@ import type {
   CardMessage,
   IgnoredConversations,
   InboxCard,
+  NewMessage,
   Recipient,
   ReplyTarget,
   SlackHit,
@@ -113,6 +114,17 @@ const latestReplyByConversation = (myHits: SlackHit[]): Map<string, string> => {
     if (isNewer(hit.ts, latest.get(key))) latest.set(key, hit.ts);
   }
   return latest;
+};
+
+export const newMessages = (before: InboxCard[], after: InboxCard[]): NewMessage[] => {
+  const knownTs = new Map(
+    before.map((card) => [card.key, new Set(card.messages.map((message) => message.ts))]),
+  );
+  return after.flatMap((card) =>
+    card.messages
+      .filter((message) => knownTs.get(card.key)?.has(message.ts) !== true)
+      .map((message) => ({ cardKey: card.key, kind: card.kind, title: card.title, message })),
+  );
 };
 
 export const dropAnswered = (cards: InboxCard[], myHits: SlackHit[]): InboxCard[] => {

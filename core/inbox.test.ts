@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dropAnswered, mergeHits, peopleFromHits, threadTargetFor } from "./inbox.ts";
+import { dropAnswered, mergeHits, newMessages, peopleFromHits, threadTargetFor } from "./inbox.ts";
 import type { InboxCard, SlackHit } from "./types.ts";
 
 const ME = "U_ME";
@@ -23,6 +23,28 @@ const hit = (overrides: Partial<SlackHit>): SlackHit => ({
 });
 
 const NO_IGNORED = new Map<string, string>();
+
+test("finds the messages a sync added: all of a new conversation's, only the newer ones of a known one", () => {
+  const before = mergeHits([], [hit({ ts: "1795000000.000100", text: "first" })], ME, NO_IGNORED);
+  const after = mergeHits(
+    before,
+    [
+      hit({ ts: "1795000000.000100", text: "first" }),
+      hit({ ts: "1795000000.000200", text: "second" }),
+      hit({ channelId: "D02", author: BOB, participants: [MYSELF, BOB], text: "from Bob" }),
+    ],
+    ME,
+    NO_IGNORED,
+  );
+
+  const added = newMessages(before, after).map((news) => [news.cardKey, news.message.text]);
+
+  assert.deepEqual(added, [
+    ["D01", "second"],
+    ["D02", "from Bob"],
+  ]);
+  assert.deepEqual(newMessages(after, after), []);
+});
 
 test("groups messages for me into one card per conversation, with the place a reply goes", () => {
   const cards = mergeHits(

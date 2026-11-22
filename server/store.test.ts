@@ -84,6 +84,25 @@ test(
 );
 
 test(
+  "tells which messages a sync brought, but none on the first sync that fills the board",
+  withStores((store) => {
+    assert.deepEqual(ingest(store, [hit({})]), []);
+
+    const news = ingest(
+      store,
+      [hit({}), hit({ ts: "1795000000.000200", text: "And PROJ-13?" })],
+      [],
+      LATER(60_000),
+    );
+
+    assert.deepEqual(
+      news.map((entry) => [entry.cardKey, entry.message.text]),
+      [["D01", "And PROJ-13?"]],
+    );
+  }),
+);
+
+test(
   "shows ticket details once fetched and makes a summary only when asked",
   withStores((store) => {
     const details = {
