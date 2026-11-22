@@ -347,7 +347,7 @@ const finishAction = async (
   const run = runningActions.get(agentId);
   if (run === undefined) return;
   runningActions.delete(agentId);
-  await callBoard($, await resolveServers($), "finish_request", {
+  await callText($, (await resolveServers($)).board, "finish_request", {
     id: run.requestId,
     outcome: outcome(run),
   });
@@ -543,7 +543,7 @@ const work = async ($: EngineInterface, settings: Settings, worker: string): Pro
       (error: unknown): FinishOutcome => ({ ok: false, error: messageOf(error) }),
     );
     if (outcome !== STARTED)
-      await callBoard($, servers, "finish_request", { id: request.id, outcome });
+      await callText($, servers.board, "finish_request", { id: request.id, outcome });
   } catch (error) {
     cachedServers = null;
     $.ui.status(`Slack Board: ${messageOf(error)}`);
