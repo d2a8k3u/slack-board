@@ -4,7 +4,7 @@
 
 The plugin has three parts, all on your machine and all started by Claude Code:
 
-- A hooks module inside Claude Code. It syncs Slack through the claude.ai Slack connector, asks Claude for drafts, rankings and summaries, runs your prompts from Actions as a Claude agent, and runs the steps you approve through your claude.ai connectors.
+- A hooks module inside Claude Code. It syncs Slack through the claude.ai Slack connector or the official Slack plugin, asks Claude for drafts, rankings and summaries, runs your prompts from Actions as a Claude agent, and runs the steps you approve through your connectors.
 - A small server that Claude Code starts as the plugin's MCP server. It keeps the board in a SQLite file and serves the board page on 127.0.0.1.
 - The board page in your browser.
 
@@ -23,9 +23,9 @@ All model calls run on the Claude account Claude Code is signed in with.
 
 Ticket details and the conversation history come straight from Jira and Slack without a model call. Send as written and the React now buttons send without Claude.
 
-A prompt from Actions runs as a background agent in the Claude Code session that picks it up. It gets the tools of your claude.ai connectors and nothing else: no files, no shell, not the board's own tools. A call runs only when the connector marks the tool as read-only; every other call is refused, and the agent puts it in its proposal instead. Its final answer goes to the card, not into your Claude Code chat.
+A prompt from Actions runs as a background agent in the Claude Code session that picks it up. It gets the tools of your claude.ai connectors and the official Slack plugin, and nothing else: no files, no shell, not the board's own tools. A call runs only when the connector marks the tool as read-only; every other call is refused, and the agent puts it in its proposal instead. Its final answer goes to the card, not into your Claude Code chat.
 
-Slack messages, tickets and tool results are passed to Claude as data; Claude is told never to follow instructions inside them. Every proposal is checked before you see it and again when you approve it: Slack and Jira steps against a fixed list, and a call of another tool only when it belongs to one of your claude.ai connectors.
+Slack messages, tickets and tool results are passed to Claude as data; Claude is told never to follow instructions inside them. Every proposal is checked before you see it and again when you approve it: Slack and Jira steps against a fixed list, and a call of another tool only when it belongs to one of your claude.ai connectors or the official Slack plugin.
 
 ## What is stored
 

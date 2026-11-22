@@ -49,7 +49,7 @@ Click any message in the conversation, yours included. A box opens under it: pre
 
 Open Actions at the top of the card and write a prompt the way you would in Claude Code, for example "find the ticket related to the one in this message" or "move PROJ-123 to review and comment that the fix is on staging". Press Run or Ctrl+Enter.
 
-Claude works on it with the conversation, the tickets on the card and the earlier prompts, using the claude.ai connectors you have connected. It answers in Actions and names the tools it read from. Tools that only read run right away. Anything that would change something (a Slack message, a Jira comment, a page in another tool) comes back as steps in Claude's proposal, and nothing runs until you approve them. A step that calls another connector's tool shows the exact input it will send.
+Claude works on it with the conversation, the tickets on the card and the earlier prompts, using your claude.ai connectors and, when installed, the official Slack plugin. It answers in Actions and names the tools it read from. Tools that only read run right away. Anything that would change something (a Slack message, a Jira comment, a page in another tool) comes back as steps in Claude's proposal, and nothing runs until you approve them. A step that calls another connector's tool shows the exact input it will send.
 
 Your prompts and Claude's answers stay on the card until it leaves the board.
 
