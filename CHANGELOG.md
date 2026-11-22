@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- The status line no longer shows `Slack Board: JSON Parse error: Unexpected identifier "ok"` after the board finishes a draft, a send, a sync or any other request. The request itself always went through.
+
 ## 0.2.0
 
 - Actions replaces the Action button. Write a prompt the way you would in Claude Code: Claude looks things up with your claude.ai connectors, answers on the card and keeps the history there. Tools that only read run on their own; any change comes back as steps you approve, including calls of other connectors' tools with their exact input.
