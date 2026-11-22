@@ -397,6 +397,37 @@ test(
 );
 
 test(
+  "sends a message as written without showing it for approval, and gives it back when the send fails",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    const claudes: Proposal = {
+      summary: "Comment",
+      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+    };
+    store.act("D01", "Find the related ticket", NOW);
+    store.finish(
+      store.claim("worker", NOW)?.id ?? 0,
+      { ok: true, reply: "PROJ-1.", tools: [], proposal: claudes },
+      NOW,
+    );
+    const written: Proposal = {
+      summary: "Send your message as written",
+      steps: [{ type: "slack_reply", text: "On it." }],
+    };
+
+    assert.equal(store.send("D01", written, NOW), true);
+    assert.deepEqual(store.cards()[0]?.pending, { kind: "execute", status: "pending" });
+    assert.equal(store.cards()[0]?.proposal, null);
+
+    const run = store.claim("worker", NOW);
+    assert.deepEqual(run?.input, { proposal: written });
+    store.finish(run?.id ?? 0, { ok: false, error: "Slack is not connected" }, NOW);
+    assert.deepEqual(store.cards()[0]?.proposal, written);
+    assert.equal(store.cards()[0]?.error, "Slack is not connected");
+  }),
+);
+
+test(
   "keeps each prompt and Claude's answer as the card's action history, with the steps Claude proposes",
   withStores((store) => {
     ingest(store, [hit({ text: "no ticket" })]);

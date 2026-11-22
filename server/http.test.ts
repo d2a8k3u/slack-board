@@ -260,6 +260,7 @@ test(
       ).status,
       202,
     );
+    assert.equal(store.cards()[0]?.proposal, null);
 
     const request = store.claim("worker", new Date());
     assert.equal(request?.kind, "execute");

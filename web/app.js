@@ -2364,7 +2364,7 @@ function updateCardState(refs, card) {
   refs.banner.hidden = card.error === null;
   setText(refs.bannerText, card.error ?? "");
   const note = memory.notes.get(card.key);
-  const working = workingMessage(card.pending?.kind, note);
+  const working = workingMessage(card, note);
   refs.working.hidden = working === null;
   syncSection(refs.working, JSON.stringify(working), () =>
     working === null
@@ -2376,14 +2376,18 @@ function updateCardState(refs, card) {
   );
 }
 
-function workingMessage(pendingKind, note) {
+function workingMessage(card, note) {
+  const pendingKind = card.pending?.kind;
   if (pendingKind === "propose")
     return {
       title: "Claude is drafting.",
       text: note === undefined ? "" : ` Your note: “${note}”`,
     };
   if (pendingKind === "execute")
-    return { title: "Sending.", text: " Claude is running the steps you approved." };
+    return {
+      title: "Sending.",
+      text: card.proposal === null ? "" : " Claude is running the steps you approved.",
+    };
   return null;
 }
 

@@ -142,7 +142,7 @@ const routesFor = ({ store, projectKeys, polish }: BoardServerOptions): Route[] 
           projectKeys,
         );
         if (!check.ok) return refuse(400, check.reason);
-        return queued(store.approve(key, check.proposal, new Date()));
+        return queued(store.send(key, check.proposal, new Date()));
       },
     },
     {

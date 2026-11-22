@@ -191,6 +191,9 @@ export type SyncInput = {
 
 const iso = (date: Date): string => date.toISOString();
 
+const runProposalOf = (request: RequestRow): Proposal =>
+  (JSON.parse(request.input) as { proposal: Proposal }).proposal;
+
 const lastTs = (messages: CardMessage[]): string | null => messages.at(-1)?.ts ?? null;
 
 type InboxRow = CardRow & { kind: ConversationKind };
@@ -440,11 +443,19 @@ export class BoardStore {
   }
 
   approve(key: string, proposal: Proposal, now: Date): boolean {
+    return this.#queueRun(key, proposal, proposal, now);
+  }
+
+  send(key: string, proposal: Proposal, now: Date): boolean {
+    return this.#queueRun(key, proposal, null, now);
+  }
+
+  #queueRun(key: string, proposal: Proposal, shownProposal: Proposal | null, now: Date): boolean {
     return this.#transaction(() => {
       if (!this.#enqueue("execute", key, { proposal }, now)) return false;
       this.#db
         .prepare("UPDATE cards SET proposal = ?, error = NULL WHERE key = ?")
-        .run(JSON.stringify(proposal), key);
+        .run(shownProposal === null ? null : JSON.stringify(shownProposal), key);
       return true;
     });
   }
@@ -575,10 +586,10 @@ export class BoardStore {
         if (outcome.ok) this.#applyRun(request, now);
         else
           this.#db
-            .prepare("UPDATE cards SET error = ?, proposal = COALESCE(?, proposal) WHERE key = ?")
+            .prepare("UPDATE cards SET error = ?, proposal = ? WHERE key = ?")
             .run(
               outcome.error,
-              outcome.remaining === undefined ? null : JSON.stringify(outcome.remaining),
+              JSON.stringify(outcome.remaining ?? runProposalOf(request)),
               request.card_key,
             );
         return;
@@ -665,7 +676,7 @@ export class BoardStore {
 
   #applyRun(request: RequestRow, now: Date): void {
     const key = request.card_key ?? "";
-    const { proposal } = JSON.parse(request.input) as { proposal: Proposal };
+    const proposal = runProposalOf(request);
     if (answersConversation(proposal.steps)) {
       this.#closeCard(key, now);
       return;
