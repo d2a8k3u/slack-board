@@ -2281,6 +2281,11 @@
     color: var(--ink);
   }
 
+  .notify-button[aria-disabled="true"] {
+    opacity: 1;
+    cursor: default;
+  }
+
   button[aria-busy="true"] {
     opacity: 1;
     cursor: progress;

@@ -44,10 +44,12 @@ const NOTIFY_LABELS = {
   denied: "Notifications blocked",
 };
 const NOTIFY_HINTS = {
-  default: "Get a system notification while the board is in the background",
-  granted: "You get a system notification while the board is in the background",
-  denied: "Allow notifications for this page in your browser's site settings",
+  default: "Turn on notifications to get them while the board is in the background",
+  granted: "Notifications are on, also while the board is in the background",
+  denied: "Notifications are blocked. Allow them for this page in your browser's site settings",
 };
+const NOTIFY_ICONS = { default: "bellQuestion", granted: "bell", denied: "bellOff" };
+const NOTIFY_ICON_PX = 18;
 const PEOPLE_DEBOUNCE_MS = 120;
 const LOOKUP_DEBOUNCE_MS = 500;
 const LOOKUP_MIN_CHARS = 2;
@@ -93,6 +95,7 @@ const ACTIONS_INTRO =
   "Write a prompt the way you would in Claude Code. Claude works on it with this conversation and answers here.";
 const HISTORY_ERROR_PREFIX = "Earlier messages could not be loaded from Slack: ";
 const EMPTY_THREAD_MESSAGE = "Write your reply first.";
+const BELL_PATH = "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0";
 const ICON_SHAPES = {
   external: { width: 2, shapes: [["path", { d: "M14 5h5v5M19 5l-8 8M18 14v5H5V6h5" }]] },
   bolt: { width: 2, shapes: [["path", { d: "M13 3L5 14h6l-1 7 8-11h-6z" }]] },
@@ -126,6 +129,17 @@ const ICON_SHAPES = {
   },
   chevron: { width: 2.4, shapes: [["path", { d: "M6 9l6 6 6-6" }]] },
   remove: { width: 3, shapes: [["path", { d: "M6 6l12 12M18 6L6 18" }]] },
+  bell: { width: 2, shapes: [["path", { d: BELL_PATH }]] },
+  bellOff: { width: 2, shapes: [["path", { d: `${BELL_PATH}M3 3l18 18` }]] },
+  bellQuestion: {
+    width: 2,
+    shapes: [
+      [
+        "path",
+        { d: `${BELL_PATH}M10.4 8.6a1.7 1.7 0 1 1 2.4 1.6c-.5.2-.8.6-.8 1.1v.3M12 14.2h.01` },
+      ],
+    ],
+  },
 };
 
 const SORTS = {
@@ -193,7 +207,6 @@ const dom = {
   syncButton: byId("sync-button"),
   syncButtonError: byId("sync-button-error"),
   notifyButton: byId("notify-button"),
-  notifyLabel: byId("notify-label"),
   toasts: byId("toasts"),
   composeButton: byId("compose-button"),
   themeButtons: [...document.querySelectorAll("[data-theme-option]")],
@@ -992,9 +1005,12 @@ function renderNotifyButton() {
   dom.notifyButton.hidden = !notificationsSupported();
   if (dom.notifyButton.hidden) return;
   const permission = Notification.permission;
-  setText(dom.notifyLabel, NOTIFY_LABELS[permission]);
+  dom.notifyButton.setAttribute("aria-label", NOTIFY_LABELS[permission]);
   dom.notifyButton.title = NOTIFY_HINTS[permission];
   setDisabled(dom.notifyButton, permission !== "default");
+  if (dom.notifyButton.dataset.permission === permission) return;
+  dom.notifyButton.dataset.permission = permission;
+  dom.notifyButton.replaceChildren(icon(NOTIFY_ICONS[permission], NOTIFY_ICON_PX));
 }
 
 async function requestNotifications() {
