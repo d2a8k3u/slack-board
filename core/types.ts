@@ -145,7 +145,7 @@ export type Recipient = { channelId: string; label: string; kind: "person" | "ch
 
 export type LookupState = { query: string; results: Recipient[]; error: string | null };
 
-export type SyncState = { lastSyncAt: string | null; lastError: string | null };
+export type SyncState = { lastSyncAt: string | null; lastError: string | null; isRunning: boolean };
 
 export type ClaimedRequest = {
   id: number;

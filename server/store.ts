@@ -285,6 +285,8 @@ export class BoardStore {
     return {
       lastSyncAt: this.#meta<string>("last_sync_at"),
       lastError: this.#meta<string>("last_sync_error"),
+      isRunning:
+        this.#db.prepare("SELECT id FROM requests WHERE kind = 'sync' LIMIT 1").get() !== undefined,
     };
   }
 

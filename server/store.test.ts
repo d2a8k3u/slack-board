@@ -353,6 +353,21 @@ test(
 );
 
 test(
+  "reports a requested sync as running from the request until Claude Code finishes it",
+  withStores((store) => {
+    assert.equal(store.syncState().isRunning, false);
+
+    store.request("sync", null, {}, NOW);
+    assert.equal(store.syncState().isRunning, true);
+    const run = store.claim("worker", NOW);
+    assert.equal(store.syncState().isRunning, true);
+
+    store.finish(run?.id ?? 0, { ok: true }, NOW);
+    assert.equal(store.syncState().isRunning, false);
+  }),
+);
+
+test(
   "lets one session hold the sync until its lease runs out",
   withStores((first, second) => {
     assert.equal(first.acquireSyncLease("a", NOW, 60_000), true);
