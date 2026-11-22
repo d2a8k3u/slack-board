@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- The board works with the official Slack plugin `slack@claude-plugins-official` as well as the claude.ai Slack connector. A session where Claude Code loads the plugin instead of the connector syncs again instead of showing `Slack Board sync failed: Connect Slack on claude.ai (Settings, Connectors)`.
+
 ## 0.2.1
 
 - The status line no longer shows `Slack Board: JSON Parse error: Unexpected identifier "ok"` after the board finishes a draft, a send, a sync or any other request. The request itself always went through.
