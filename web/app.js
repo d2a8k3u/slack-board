@@ -24,6 +24,7 @@ import {
   TYPE_LABELS,
   titleRanges,
 } from "./board-view.js";
+import { cardNotices, newsNotices, syncNotices } from "./notifications.js";
 import { safeHref, slackTokens } from "./slack-text.js";
 
 const TOKEN_STORAGE_KEY = "slack-board-token";
@@ -34,6 +35,19 @@ const GROUP_STORAGE_KEY = "slack-board-group";
 const COLLAPSED_STORAGE_KEY = "slack-board-collapsed";
 const SEARCH_SHORTCUT = "/";
 const POLL_INTERVAL_MS = 2000;
+const TOAST_MS = 8000;
+const MAX_TOASTS = 4;
+const ALL_NOTICES_ON = { newMessages: true, claudeDone: true, sendFailed: true, syncFailed: true };
+const NOTIFY_LABELS = {
+  default: "Turn on notifications",
+  granted: "Notifications on",
+  denied: "Notifications blocked",
+};
+const NOTIFY_HINTS = {
+  default: "Get a system notification while the board is in the background",
+  granted: "You get a system notification while the board is in the background",
+  denied: "Allow notifications for this page in your browser's site settings",
+};
 const PEOPLE_DEBOUNCE_MS = 120;
 const LOOKUP_DEBOUNCE_MS = 500;
 const LOOKUP_MIN_CHARS = 2;
@@ -178,6 +192,9 @@ const dom = {
   connectionError: byId("connection-error"),
   syncButton: byId("sync-button"),
   syncButtonError: byId("sync-button-error"),
+  notifyButton: byId("notify-button"),
+  notifyLabel: byId("notify-label"),
+  toasts: byId("toasts"),
   composeButton: byId("compose-button"),
   themeButtons: [...document.querySelectorAll("[data-theme-option]")],
   viewButtons: [...document.querySelectorAll("[data-view-option]")],
@@ -230,6 +247,8 @@ const board = {
   loaded: false,
   cards: [],
   sync: { lastSyncAt: null, lastError: null, isRunning: false },
+  news: null,
+  notify: ALL_NOTICES_ON,
   lookup: null,
   polish: true,
   connectionError: null,
@@ -788,11 +807,17 @@ function parseJson(text) {
 function readState(payload) {
   if (!isObject(payload) || !Array.isArray(payload.cards) || !isObject(payload.sync))
     throw new ApiError(0, UNREADABLE_MESSAGE);
+  const settings = isObject(payload.settings) ? payload.settings : {};
+  const notify = isObject(settings.notify) ? settings.notify : {};
   return {
     cards: payload.cards,
     sync: payload.sync,
+    news: isObject(payload.news) && Array.isArray(payload.news.items) ? payload.news : null,
     lookup: isObject(payload.lookup) ? payload.lookup : null,
-    polish: !(isObject(payload.settings) && payload.settings.polish === false),
+    polish: settings.polish !== false,
+    notify: Object.fromEntries(
+      Object.keys(ALL_NOTICES_ON).map((event) => [event, notify[event] !== false]),
+    ),
   };
 }
 
@@ -841,14 +866,18 @@ async function loadState() {
 }
 
 function applyState(state) {
-  const previous = board.cards;
+  const changes = cardChanges(board.cards, state.cards);
+  const notices = board.loaded ? noticesOf(state, changes) : { cards: [], board: [] };
   board.cards = state.cards;
   board.sync = state.sync;
+  board.news = state.news;
+  board.notify = state.notify;
   board.lookup = state.lookup;
   board.polish = state.polish;
   board.loaded = true;
   board.connectionError = null;
-  announce(announcementsOf(cardChanges(previous, state.cards)));
+  announce([...announcementsOf(changes), ...notices.board.map(spokenNotice)]);
+  notify([...notices.board, ...notices.cards]);
   forgetMissingCards();
   if (ui.openKey !== null && findCard(ui.openKey) === undefined) closeDetail();
   rerunLookupMerge();
@@ -865,6 +894,113 @@ const ANNOUNCEMENTS = {
 
 const announcementsOf = (changes) =>
   changes.map((change) => ANNOUNCEMENTS[change.kind](change.card));
+
+function noticesOf(state, changes) {
+  const isAllowed = (notice) => state.notify[notice.event];
+  return {
+    board: [...newsNotices(board.news, state.news), ...syncNotices(board.sync, state.sync)].filter(
+      isAllowed,
+    ),
+    cards: cardNotices(changes).filter(isAllowed),
+  };
+}
+
+const spokenNotice = (notice) => `${notice.title}: ${notice.body}`;
+
+const notificationsSupported = () => "Notification" in window;
+
+const isBoardInFront = () => document.visibilityState === "visible" && document.hasFocus();
+
+function notify(notices) {
+  const canNotifySystem = notificationsSupported() && Notification.permission === "granted";
+  for (const notice of notices) {
+    if (isBoardInFront() || !canNotifySystem) showToast(notice);
+    else showSystemNotification(notice);
+  }
+}
+
+function openFromNotice(notice) {
+  if (notice.cardKey !== null) openCard(notice.cardKey);
+}
+
+function showSystemNotification(notice) {
+  try {
+    const shown = new Notification(notice.title, { body: notice.body, tag: notice.tag });
+    shown.addEventListener("click", () => {
+      window.focus();
+      shown.close();
+      openFromNotice(notice);
+    });
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    showToast(notice);
+  }
+}
+
+function showToast(notice) {
+  const toast = el("div", { class: "toast", "data-tag": notice.tag });
+  const dismiss = () => toast.remove();
+  const content = [
+    el("strong", { class: "toast-title", text: notice.title }),
+    el("span", { class: "toast-body", text: notice.body }),
+  ];
+  const main =
+    notice.cardKey === null
+      ? el("div", { class: "toast-main" }, ...content)
+      : el(
+          "button",
+          {
+            type: "button",
+            class: "toast-main toast-open",
+            onclick: () => {
+              dismiss();
+              openFromNotice(notice);
+            },
+          },
+          ...content,
+        );
+  toast.append(
+    main,
+    el(
+      "button",
+      {
+        type: "button",
+        class: "toast-close",
+        "aria-label": "Dismiss notification",
+        onclick: dismiss,
+      },
+      icon("close", 14),
+    ),
+  );
+  for (const same of dom.toasts.querySelectorAll(".toast"))
+    if (same.dataset.tag === notice.tag) same.remove();
+  dom.toasts.append(toast);
+  while (dom.toasts.children.length > MAX_TOASTS) dom.toasts.firstElementChild?.remove();
+  setTimeout(dismiss, TOAST_MS);
+}
+
+function placeToasts() {
+  const host = dom.detailDialog.open
+    ? dom.detailDialog
+    : dom.composeDialog.open
+      ? dom.composeDialog
+      : dom.app;
+  if (dom.toasts.parentElement !== host) host.append(dom.toasts);
+}
+
+function renderNotifyButton() {
+  dom.notifyButton.hidden = !notificationsSupported();
+  if (dom.notifyButton.hidden) return;
+  const permission = Notification.permission;
+  setText(dom.notifyLabel, NOTIFY_LABELS[permission]);
+  dom.notifyButton.title = NOTIFY_HINTS[permission];
+  setDisabled(dom.notifyButton, permission !== "default");
+}
+
+async function requestNotifications() {
+  await Notification.requestPermission();
+  renderNotifyButton();
+}
 
 function forgetMissingCards() {
   const present = new Set(board.cards.map((card) => card.key));
@@ -1304,6 +1440,7 @@ function render() {
   renderCards();
   renderDetail();
   renderCompose();
+  placeToasts();
 }
 
 function queueRender() {
@@ -1335,6 +1472,7 @@ function renderHeader() {
   const isSyncing = requests.inFlight.has("sync") || board.sync.isRunning === true;
   setDisabled(dom.syncButton, isSyncing);
   setBusy(dom.syncButton, isSyncing);
+  renderNotifyButton();
 }
 
 function syncOptions(select, options, value) {
@@ -2870,6 +3008,10 @@ function bindEvents() {
     button.addEventListener("click", () => setView(button.dataset.viewOption));
   darkScheme.addEventListener("change", applyTheme);
   dom.syncButton.addEventListener("click", () => !isDisabled(dom.syncButton) && requestSync());
+  dom.notifyButton.addEventListener(
+    "click",
+    () => !isDisabled(dom.notifyButton) && void requestNotifications().catch(reportDefect),
+  );
   dom.composeButton.addEventListener("click", openCompose);
   dom.channelSelect.addEventListener("change", () => setFilter("channel", dom.channelSelect.value));
   dom.personSelect.addEventListener("change", () => setFilter("person", dom.personSelect.value));

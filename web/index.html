@@ -44,6 +44,10 @@
           </button>
           <p id="sync-button-error" class="field-error" role="alert"></p>
         </div>
+        <button id="notify-button" type="button" class="button button-outline" hidden>
+          <svg class="sb-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg>
+          <span id="notify-label">Turn on notifications</span>
+        </button>
         <button id="compose-button" type="button" class="sb-btn button button-accent" aria-haspopup="dialog">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
           New message
@@ -51,6 +55,7 @@
       </div>
       <p id="connection-error" class="header-error header-error--wide" role="alert"></p>
     </header>
+    <section id="toasts" class="toasts" aria-label="Notifications"></section>
 
     <main class="board" aria-labelledby="list-heading">
       <div class="board-title">

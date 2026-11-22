@@ -2211,6 +2211,76 @@
     color: var(--danger-fg);
   }
 
+  .toasts {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 50;
+    width: min(360px, calc(100vw - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+  }
+  .toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 16px;
+    border: 1px solid var(--line-2);
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: 0 12px 32px var(--shadow);
+    animation: sb-drop 0.24s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .toast-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+  }
+  .toast-open {
+    cursor: pointer;
+  }
+  .toast-open:hover {
+    background: var(--surface-2);
+  }
+  .toast-title {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .toast-body {
+    font-size: 14px;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .toast-close {
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--muted);
+  }
+  .toast-close:hover {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+
   button[aria-busy="true"] {
     opacity: 1;
     cursor: progress;
