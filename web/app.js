@@ -2,6 +2,7 @@ import {
   ALL_TYPES,
   ANY,
   activeFilters,
+  CONTROLS,
   DIRECT,
   DIRECT_LABEL,
   excerptRanges,
@@ -17,6 +18,7 @@ import {
   placeOf,
   STATUSES,
   searchCards,
+  spinningControl,
   statusOf,
   TYPE_LABELS,
   titleRanges,
@@ -226,7 +228,7 @@ const board = {
   signedOut: false,
   loaded: false,
   cards: [],
-  sync: { lastSyncAt: null, lastError: null },
+  sync: { lastSyncAt: null, lastError: null, isRunning: false },
   lookup: null,
   polish: true,
   connectionError: null,
@@ -259,6 +261,7 @@ const memory = {
   threadDrafts: new Map(),
   notes: new Map(),
   edits: new Map(),
+  started: new Map(),
   opened: readOpened(),
 };
 
@@ -377,6 +380,7 @@ function icon(name, size = 16) {
     "stroke-linecap": "round",
     "stroke-linejoin": "round",
     "aria-hidden": "true",
+    class: "sb-icon",
   };
   for (const [attribute, value] of Object.entries(attributes))
     svg.setAttribute(attribute, String(value));
@@ -395,6 +399,28 @@ function setText(node, text) {
 
 function setDisabled(button, disabled) {
   button.setAttribute("aria-disabled", disabled ? "true" : "false");
+}
+
+function setBusy(button, busy) {
+  button.setAttribute("aria-busy", busy ? "true" : "false");
+}
+
+function spinOnly(buttonsByControl, spinning) {
+  const spinner = spinning === null ? undefined : buttonsByControl.get(spinning);
+  for (const button of new Set(buttonsByControl.values())) setBusy(button, button === spinner);
+}
+
+const reactionControl = (reaction) => `reaction:${reaction}`;
+const threadControl = (control, ts) => `${control}:${ts}`;
+
+function startWork(key, control, kind, scope) {
+  memory.started.set(key, { control, kind, scope });
+}
+
+function spinningControlOf(card) {
+  const started = memory.started.get(card.key);
+  const isRequestInFlight = started !== undefined && requests.inFlight.has(started.scope);
+  return spinningControl(card, isRequestInFlight, started);
 }
 
 const isDisabled = (button) => button.getAttribute("aria-disabled") === "true";
@@ -855,7 +881,14 @@ function stateChanges(previous, next) {
 
 function forgetMissingCards() {
   const present = new Set(board.cards.map((card) => card.key));
-  for (const store of [memory.drafts, memory.actionDrafts, memory.notes, memory.edits]) {
+  const cardStores = [
+    memory.drafts,
+    memory.actionDrafts,
+    memory.notes,
+    memory.edits,
+    memory.started,
+  ];
+  for (const store of cardStores) {
     for (const key of store.keys()) if (!present.has(key)) store.delete(key);
   }
   for (const key of memory.threadDrafts.keys())
@@ -916,11 +949,12 @@ function rejectSubmit(scope, message, field) {
   field?.focus();
 }
 
-async function propose(key, text, { scope, replyToTs = null }) {
+async function propose(key, text, { scope, control, replyToTs = null }) {
   if (isCardBusy(key)) {
     rejectSubmit(scope, BUSY_MESSAGE, null);
     return false;
   }
+  startWork(key, control, "propose", scope);
   const body = replyToTs === null ? { text } : { text, replyToTs };
   const result = await runAction(scope, () => api("POST", `${cardPath(key)}/propose`, body), {
     conflictMessage: BUSY_MESSAGE,
@@ -932,11 +966,12 @@ async function propose(key, text, { scope, replyToTs = null }) {
   return result.ok;
 }
 
-async function sendAsWritten(key, text, { scope, replyToTs = null }) {
+async function sendAsWritten(key, text, { scope, control, replyToTs = null }) {
   if (isCardBusy(key)) {
     rejectSubmit(scope, BUSY_MESSAGE, null);
     return false;
   }
+  startWork(key, control, "execute", scope);
   const body = replyToTs === null ? { text } : { text, replyToTs };
   const result = await runAction(scope, () => api("POST", `${cardPath(key)}/send`, body), {
     conflictMessage: BUSY_MESSAGE,
@@ -949,18 +984,21 @@ function deliver(key, text, options) {
   return board.polish ? propose(key, text, options) : sendAsWritten(key, text, options);
 }
 
-async function submitComposer(key, submit = deliver) {
+async function submitComposer(key, submit = deliver, control = CONTROLS.draft) {
   const field = detail?.composerField;
   const text = field?.value.trim() ?? "";
   const scope = scopeOf("propose", key);
   if (text === "") return rejectSubmit(scope, EMPTY_COMPOSER_MESSAGE, field);
-  if (!(await submit(key, text, { scope }))) return;
+  if (!(await submit(key, text, { scope, control }))) return;
   memory.drafts.delete(key);
   if (detail?.key === key) detail.composerField.value = "";
 }
 
 function sendReaction(key, reaction) {
-  void sendAsWritten(key, reaction, { scope: scopeOf("propose", key) });
+  void sendAsWritten(key, reaction, {
+    scope: scopeOf("propose", key),
+    control: reactionControl(reaction),
+  });
 }
 
 async function runPrompt(key) {
@@ -969,6 +1007,7 @@ async function runPrompt(key) {
   const scope = scopeOf("action", key);
   if (text === "") return rejectSubmit(scope, EMPTY_ACTION_MESSAGE, field);
   if (isCardBusy(key)) return rejectSubmit(scope, BUSY_MESSAGE, null);
+  startWork(key, CONTROLS.run, "act", scope);
   const result = await runAction(scope, () => api("POST", `${cardPath(key)}/act`, { text }), {
     conflictMessage: BUSY_MESSAGE,
     onSuccess: () => {
@@ -985,11 +1024,12 @@ function requestHistory(key) {
   void runAction(scopeOf("history", key), () => api("POST", `${cardPath(key)}/history`));
 }
 
-async function sendThreadReply(key, ts, field, submit = deliver) {
+async function sendThreadReply(key, ts, field, submit = deliver, control = CONTROLS.draft) {
   const text = field.value.trim();
   const scope = scopeOf("thread", threadDraftKey(key, ts));
   if (text === "") return rejectSubmit(scope, EMPTY_THREAD_MESSAGE, field);
-  if (!(await submit(key, text, { scope, replyToTs: ts }))) return;
+  if (!(await submit(key, text, { scope, control: threadControl(control, ts), replyToTs: ts })))
+    return;
   memory.threadDrafts.delete(threadDraftKey(key, ts));
   if (detail?.key !== key || ui.replyToTs !== ts) return;
   ui.replyToTs = null;
@@ -1002,6 +1042,7 @@ function approve(key) {
   if (card === undefined || card.proposal === null) return;
   const scope = scopeOf("proposal", key);
   if (card.pending !== null) return rejectSubmit(scope, BUSY_MESSAGE, null);
+  startWork(key, CONTROLS.approve, "execute", scope);
   void runAction(
     scope,
     () => api("POST", `${cardPath(key)}/approve`, { proposal: editedProposal(card) }),
@@ -1017,6 +1058,7 @@ function discard(key) {
   if (card === undefined) return;
   const scope = scopeOf("proposal", key);
   if (card.pending !== null) return rejectSubmit(scope, BUSY_MESSAGE, null);
+  startWork(key, CONTROLS.discard, null, scope);
   void runAction(scope, () => api("POST", `${cardPath(key)}/discard`), {
     conflictMessage: BUSY_MESSAGE,
     onSuccess: () => {
@@ -1303,7 +1345,9 @@ function renderHeader() {
   );
   setText(dom.connectionError, board.connectionError ?? "");
   setText(dom.syncButtonError, requests.errors.get("sync") ?? "");
-  setDisabled(dom.syncButton, requests.inFlight.has("sync"));
+  const isSyncing = requests.inFlight.has("sync") || board.sync.isRunning === true;
+  setDisabled(dom.syncButton, isSyncing);
+  setBusy(dom.syncButton, isSyncing);
 }
 
 function syncOptions(select, options, value) {
@@ -1553,6 +1597,7 @@ function applyCardFlags(entry, card) {
   entry.unreadLabel.hidden = !unread;
   const ignoreScope = scopeOf("ignore", card.key);
   setDisabled(entry.ignoreButton, requests.inFlight.has(ignoreScope));
+  setBusy(entry.ignoreButton, requests.inFlight.has(ignoreScope));
   setText(entry.ignoreError, requests.errors.get(ignoreScope) ?? "");
 }
 
@@ -1883,7 +1928,8 @@ function buildComposer(key, refs) {
           type: "button",
           class: "sb-chip button button-outline",
           onclick: (event) =>
-            !isDisabled(event.currentTarget) && void submitComposer(key, sendAsWritten),
+            !isDisabled(event.currentTarget) &&
+            void submitComposer(key, sendAsWritten, CONTROLS.send),
         },
         icon("send", 14),
         "Send as written",
@@ -1961,6 +2007,7 @@ function updateDetailHead(refs, card) {
     refs.slackLink.setAttribute("href", permalink);
   const ignoreScope = scopeOf("ignore", card.key);
   setDisabled(refs.ignoreButton, requests.inFlight.has(ignoreScope));
+  setBusy(refs.ignoreButton, requests.inFlight.has(ignoreScope));
   setText(refs.ignoreError, requests.errors.get(ignoreScope) ?? "");
 }
 
@@ -1985,6 +2032,7 @@ function updateActions(refs, card) {
   if (turnsAtEnd) scrollToEnd(refs.actionTurns);
   const scope = scopeOf("action", card.key);
   setDisabled(refs.actionSubmit, card.pending !== null || requests.inFlight.has(scope));
+  setBusy(refs.actionSubmit, spinningControlOf(card) === CONTROLS.run);
   setText(refs.actionError, requests.errors.get(scope) ?? "");
 }
 
@@ -2140,6 +2188,13 @@ function updateThreadReplies(refs, card) {
     const busy = card.pending !== null || requests.inFlight.has(scope);
     setDisabled(entry.form.submit, busy);
     if (entry.form.sendWritten !== null) setDisabled(entry.form.sendWritten, busy);
+    spinOnly(
+      new Map([
+        [threadControl(CONTROLS.draft, ts), entry.form.submit],
+        [threadControl(CONTROLS.send, ts), entry.form.sendWritten ?? entry.form.submit],
+      ]),
+      spinningControlOf(card),
+    );
     setText(entry.form.error, requests.errors.get(scope) ?? "");
   }
 }
@@ -2171,7 +2226,7 @@ function threadReplyForm(cardKey, message) {
           class: "sb-chip button button-outline button-small",
           onclick: (event) =>
             !isDisabled(event.currentTarget) &&
-            void sendThreadReply(cardKey, message.ts, field, sendAsWritten),
+            void sendThreadReply(cardKey, message.ts, field, sendAsWritten, CONTROLS.send),
         },
         "Send as written",
       )
@@ -2308,6 +2363,7 @@ function summaryNode(ticket, busy) {
         class: "again-button hit44",
         "data-focus-key": focusKey,
         "aria-disabled": String(busy),
+        "aria-busy": String(busy),
         onclick: summarizeHandler,
       },
       "Summarize again",
@@ -2347,6 +2403,7 @@ function summaryNode(ticket, busy) {
             class: "sb-chip summarize-button",
             "data-focus-key": focusKey,
             "aria-disabled": String(busy),
+            "aria-busy": String(busy),
             onclick: summarizeHandler,
           },
           icon("summarize"),
@@ -2409,6 +2466,13 @@ function updateProposal(refs, card) {
   const busy = card.pending !== null || requests.inFlight.has(scope);
   setDisabled(refs.proposalControls.approve, busy);
   setDisabled(refs.proposalControls.discard, busy);
+  spinOnly(
+    new Map([
+      [CONTROLS.approve, refs.proposalControls.approve],
+      [CONTROLS.discard, refs.proposalControls.discard],
+    ]),
+    spinningControlOf(card),
+  );
   setText(refs.proposalControls.error, requests.errors.get(scope) ?? "");
 }
 
@@ -2556,6 +2620,17 @@ function updateComposer(refs, card) {
   setDisabled(refs.draftButton, busy);
   if (refs.sendWrittenButton !== null) setDisabled(refs.sendWrittenButton, busy);
   for (const button of refs.reactionButtons) setDisabled(button, busy);
+  spinOnly(
+    new Map([
+      [CONTROLS.draft, refs.draftButton],
+      [CONTROLS.send, refs.sendWrittenButton ?? refs.draftButton],
+      ...QUICK_REACTIONS.map((reaction, index) => [
+        reactionControl(reaction),
+        refs.reactionButtons[index],
+      ]),
+    ]),
+    spinningControlOf(card),
+  );
   setText(refs.composerStatus, card.pending === null ? "" : BUSY_MESSAGE);
   setText(refs.composerError, requests.errors.get(scope) ?? "");
 }

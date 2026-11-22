@@ -243,6 +243,34 @@ function mergedRanges(ranges) {
   return merged;
 }
 
+export const CONTROLS = {
+  draft: "draft",
+  send: "send",
+  approve: "approve",
+  discard: "discard",
+  run: "run",
+};
+
+const controlForWork = (card) => {
+  switch (card.pending?.kind) {
+    case "propose":
+      return CONTROLS.draft;
+    case "act":
+      return CONTROLS.run;
+    case "execute":
+      return card.proposal === null ? CONTROLS.send : CONTROLS.approve;
+    default:
+      return null;
+  }
+};
+
+export function spinningControl(card, isRequestInFlight, started) {
+  const kind = card.pending?.kind ?? null;
+  const isStartedWork = kind === null ? isRequestInFlight : kind === started?.kind;
+  if (started !== undefined && isStartedWork) return started.control;
+  return controlForWork(card);
+}
+
 export const SCROLL_END_TOLERANCE_PX = 16;
 
 export const isScrolledToEnd = ({ scrollTop, clientHeight, scrollHeight }) =>

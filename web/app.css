@@ -139,6 +139,11 @@
       background-position: 0 0;
     }
   }
+  @keyframes sb-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
 
   *,
   *::before,
@@ -2204,6 +2209,29 @@
   }
   .result--first .result-kind {
     color: var(--danger-fg);
+  }
+
+  button[aria-busy="true"] {
+    opacity: 1;
+    cursor: progress;
+  }
+  button[aria-busy="true"] > .sb-icon {
+    display: none;
+  }
+  button[aria-busy="true"]::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: sb-spin 0.8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    button[aria-busy="true"]::before {
+      animation: none;
+    }
   }
 
   @media (max-width: 640px) {

@@ -9,6 +9,7 @@ import {
   matchesFilters,
   SCROLL_END_TOLERANCE_PX,
   searchCards,
+  spinningControl,
 } from "./board-view.js";
 
 const NO_FILTERS = { type: "all", channel: "any", person: "any", priority: "any" };
@@ -258,6 +259,23 @@ test("splits text into marked and plain parts, merging ranges that touch or over
     ],
   );
   assert.deepEqual(highlightParts("plain", []), [{ text: "plain", match: false }]);
+});
+
+test("spins the button that started the card's work, and guesses from the work when no button is known", () => {
+  const reaction = { control: "reaction:eyes", kind: "execute" };
+  const draft = { control: "draft", kind: "propose" };
+  const pending = (kind) => ({ kind, status: "working" });
+  const cases = [
+    [{ pending: null, proposal: null }, true, reaction, "reaction:eyes"],
+    [{ pending: pending("execute"), proposal: null }, false, reaction, "reaction:eyes"],
+    [{ pending: pending("history"), proposal: null }, false, draft, null],
+    [{ pending: null, proposal: null }, false, reaction, null],
+    [{ pending: pending("propose"), proposal: null }, false, undefined, "draft"],
+    [{ pending: pending("execute"), proposal: { steps: [] } }, false, undefined, "approve"],
+    [{ pending: pending("execute"), proposal: null }, false, undefined, "send"],
+  ];
+  for (const [card, isRequestInFlight, started, expected] of cases)
+    assert.equal(spinningControl(card, isRequestInFlight, started), expected);
 });
 
 test("counts a list as scrolled to its end only within the tolerance, so a reader who scrolled up keeps their place", () => {
