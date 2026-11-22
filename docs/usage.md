@@ -65,4 +65,10 @@ Press New message, type a name or channel, and pick one. People and channels fro
 
 ## Sync
 
-The board checks Slack every 5 minutes while any Claude Code session is open, and 30 seconds after a failed check. Sync now checks right away. The header shows when the last check ran and any error.
+The board checks Slack every 5 minutes while any Claude Code session is open, and 30 seconds after a failed check. Sync now checks right away and spins until the check is done. The header shows when the last check ran and any error.
+
+## Notifications
+
+Claude Code notifies you when someone writes to you, when Claude's draft is ready or Claude answered a prompt, when a reply or approved step did not go out, and when checking Slack starts failing. They use your Claude Code notification setting: a system notification in the desktop app, the terminal's own notification in a terminal. They come only while Claude Code runs, like the sync.
+
+A new message shows who wrote, where, and the start of the text. When more than three conversations have news at once, one notification sums them up. The first sync of a new board stays quiet. Each kind can be turned off in the [settings](settings.md).
