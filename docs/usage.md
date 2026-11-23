@@ -61,7 +61,9 @@ Click any message in the conversation, yours included. A box opens under it: pre
 
 Open Actions at the top of the card and write a prompt the way you would in Claude Code, for example "find the ticket related to the one in this message" or "move PROJ-123 to review and comment that the fix is on staging". Press Run or Ctrl+Enter.
 
-Claude works on it with the conversation, the tickets on the card and the earlier prompts, using your claude.ai connectors and, when installed, the official Slack plugin. It answers in Actions and names the tools it read from. Tools that only read run right away. Anything that would change something (a Slack message, a Jira comment, a page in another tool) comes back as steps in Claude's proposal, and nothing runs until you approve them. A step that calls another connector's tool shows the exact input it will send.
+Claude works on it with the conversation, the tickets on the card and the earlier prompts, using your claude.ai connectors and, when installed, the official Slack plugin. It answers in Actions and names the tools it read from. Tools that only read run right away. Anything that would change something (a Slack message, a Jira comment, a page in another tool) comes back as steps under Claude's answer, with their own Approve and Discard, and nothing runs until you approve them. A step that calls another connector's tool shows the exact input it will send. A card that opens with steps waiting opens Actions with it.
+
+Steps from Actions and a draft from the reply box wait separately; neither replaces the other. Claude sees the steps that wait when you write the next prompt: when its answer brings steps, they replace the waiting ones and move under that answer, and an answer without steps leaves them as they are. If a step fails, the error shows in Actions and only the steps that did not run stay under the answer, so approving again never runs anything twice.
 
 A long list of prompts and answers scrolls the same way as the conversation.
 
