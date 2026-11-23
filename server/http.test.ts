@@ -175,6 +175,24 @@ test(
 );
 
 test(
+  "searches only people or only channels when asked, and refuses another kind",
+  withBoard(async (port, token, store) => {
+    seedCard(store);
+    const auth = { headers: { "x-board-token": token } };
+
+    const people = await send(port, "/api/people?q=nov&kind=person", auth);
+    const channels = await send(port, "/api/people?q=nov&kind=channel", auth);
+    const groups = await send(port, "/api/people?q=nov&kind=group", auth);
+
+    assert.deepEqual(JSON.parse(people.body).people, [
+      { channelId: "U_ANA", label: "Ana Novak", kind: "person" },
+    ]);
+    assert.deepEqual(JSON.parse(channels.body).people, []);
+    assert.equal(groups.status, 400);
+  }),
+);
+
+test(
   "refuses a thread reply to a message that is not on the card",
   withBoard(async (port, token, store) => {
     seedCard(store);
