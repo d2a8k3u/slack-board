@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+- Type `@` or `#` at the start of a word in a reply box, a thread reply box or the reply text of a proposal to mention someone or link a channel. The list shows the people in the conversation first, then people and channels from your other conversations and earlier searches, then what a Slack search finds; on a channel card it also offers `@here`, `@channel` and `@everyone`. The line under the box says who your text notifies and which channels it links.
+- With Draft, Claude keeps every mention and channel link of your note and adds none; a draft that changes them fails with an error. Mention syntax you type by hand, such as `<@U123>`, goes out as text and notifies nobody.
+- Other messages at the end of the board collects what people and bots post in your public and private channels, grouped by channel, until you mark it read on the board. A message leaves the section after `lookback_days`. A sync reads at most 100 channel messages; when Slack has more, the section says some are missing.
+- A person's `@here`, `@channel` or `@everyone` in one of your channels becomes a card.
+- Steps Claude proposes in Actions wait in Actions under its answer, with their own Approve and Discard, and no longer replace the draft from the reply box. Claude gets the waiting steps with your next prompt and revises them. Steps an earlier version put above the reply box stay there.
+- When approved steps from Actions fail, the error shows in Actions and only the steps that did not run stay under the answer.
+- After a failed run, approving the steps that did not run replies in the thread of the message you picked, not in the card's thread.
+- A user group mention as Slack search returns it shows as `@group` instead of its raw code.
+
 ## 0.3.0
 
 - The board notifies you when someone writes to you, when Claude's draft is ready or Claude answered a prompt in Actions, when a reply, reaction or approved step did not go out, and when checking Slack starts failing. While you use the board, a notification shows in its top right corner and opens the card on click. While the board tab is in the background, it comes from your browser. Notifications come only while the board tab is open.
