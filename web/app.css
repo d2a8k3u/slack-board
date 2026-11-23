@@ -859,10 +859,13 @@
     background: transparent;
     color: var(--ink);
   }
-  .section-toggle svg {
+  .section-toggle svg,
+  .other-channel-toggle svg {
+    flex-shrink: 0;
     transition: transform 0.2s ease;
   }
-  .section-toggle[aria-expanded="false"] svg {
+  .section-toggle[aria-expanded="false"] svg,
+  .other-channel-toggle[aria-expanded="false"] svg {
     transform: rotate(-90deg);
   }
   .section-dot {
@@ -915,6 +918,96 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+  }
+
+  .other-messages {
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  .other-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .other-channels {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .other-channel {
+    border: 2px solid var(--line);
+    border-radius: 16px;
+    background: var(--surface);
+  }
+  .other-channel-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px 4px 12px;
+  }
+  .other-channel-toggle {
+    flex: 1 1 240px;
+    min-width: 0;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    text-align: left;
+  }
+  .other-channel-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .other-channel-time {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .other-list {
+    list-style: none;
+    margin: 0;
+    padding: 14px 18px 18px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .other-message {
+    display: flex;
+    gap: 12px;
+  }
+  .other-message-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .other-message-meta {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
+    font-size: 12px;
+  }
+  .other-message-link {
+    color: var(--accent-ink);
+    font-weight: 600;
   }
 
   .hl {

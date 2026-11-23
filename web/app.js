@@ -95,6 +95,10 @@ const ACTIONS_INTRO =
   "Write a prompt the way you would in Claude Code. Claude works on it with this conversation and answers here.";
 const HISTORY_ERROR_PREFIX = "Earlier messages could not be loaded from Slack: ";
 const EMPTY_THREAD_MESSAGE = "Write your reply first.";
+const NO_OTHER_MESSAGES = { total: 0, isMissing: false, channels: [] };
+const OTHER_READ = "other-read";
+const OTHER_LOADING_MESSAGE = "Loading messages…";
+const OTHER_NO_TEXT_MESSAGE = "No text here. Open it in Slack to see it.";
 const BELL_PATH = "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0";
 const ICON_SHAPES = {
   external: { width: 2, shapes: [["path", { d: "M14 5h5v5M19 5l-8 8M18 14v5H5V6h5" }]] },
@@ -237,6 +241,13 @@ const dom = {
   emptyState: byId("empty-state"),
   emptyClear: byId("empty-clear"),
   cardSections: byId("card-sections"),
+  otherMessages: byId("other-messages"),
+  otherToggle: byId("other-toggle"),
+  otherCount: byId("other-count"),
+  otherReadAll: byId("other-read-all"),
+  otherMissing: byId("other-missing"),
+  otherError: byId("other-error"),
+  otherChannels: byId("other-channels"),
   detailDialog: byId("detail-dialog"),
   composeDialog: byId("compose-dialog"),
   composeClose: byId("compose-close"),
@@ -261,6 +272,7 @@ const board = {
   cards: [],
   sync: { lastSyncAt: null, lastError: null, isRunning: false },
   news: null,
+  otherMessages: NO_OTHER_MESSAGES,
   notify: ALL_NOTICES_ON,
   lookup: null,
   polish: true,
@@ -286,6 +298,8 @@ const ui = {
   actionsOpen: false,
   replyToTs: null,
   pendingOpenKey: null,
+  otherOpen: false,
+  openChannels: new Set(),
 };
 
 const memory = {
@@ -826,6 +840,10 @@ function readState(payload) {
     cards: payload.cards,
     sync: payload.sync,
     news: isObject(payload.news) && Array.isArray(payload.news.items) ? payload.news : null,
+    otherMessages:
+      isObject(payload.otherMessages) && Array.isArray(payload.otherMessages.channels)
+        ? payload.otherMessages
+        : NO_OTHER_MESSAGES,
     lookup: isObject(payload.lookup) ? payload.lookup : null,
     polish: settings.polish !== false,
     notify: Object.fromEntries(
@@ -864,10 +882,15 @@ function refreshNow() {
   return stateChain;
 }
 
+function statePath() {
+  if (!ui.otherOpen || ui.openChannels.size === 0) return "/api/state";
+  return `/api/state?channels=${[...ui.openChannels].map(encodeURIComponent).join(",")}`;
+}
+
 async function loadState() {
   if (board.signedOut) return;
   try {
-    applyState(readState(await api("GET", "/api/state")));
+    applyState(readState(await api("GET", statePath())));
   } catch (error) {
     if (!(error instanceof ApiError)) throw error;
     if (error.status === 401) return;
@@ -884,6 +907,8 @@ function applyState(state) {
   board.cards = state.cards;
   board.sync = state.sync;
   board.news = state.news;
+  board.otherMessages = state.otherMessages;
+  forgetClosedChannels();
   board.notify = state.notify;
   board.lookup = state.lookup;
   board.polish = state.polish;
@@ -1051,6 +1076,12 @@ function forgetMissingCards() {
   if (staleOpened.length === 0) return;
   for (const key of staleOpened) memory.opened.delete(key);
   writeOpened();
+}
+
+function forgetClosedChannels() {
+  const present = new Set(board.otherMessages.channels.map((channel) => channel.channelId));
+  for (const channelId of ui.openChannels)
+    if (!present.has(channelId)) ui.openChannels.delete(channelId);
 }
 
 function openPendingCard() {
@@ -1432,6 +1463,48 @@ function toggleSection(sectionKey) {
   render();
 }
 
+function toggleOtherMessages() {
+  ui.otherOpen = !ui.otherOpen;
+  render();
+  if (ui.otherOpen && ui.openChannels.size > 0) void refreshNow();
+}
+
+function toggleOtherChannel(channelId) {
+  if (ui.openChannels.has(channelId)) ui.openChannels.delete(channelId);
+  else ui.openChannels.add(channelId);
+  render();
+  if (ui.openChannels.has(channelId)) void refreshNow();
+}
+
+const readMarkOf = (channel) => ({ channelId: channel.channelId, throughTs: channel.latestTs });
+
+function markChannelRead(channel) {
+  const leavesSectionEmpty =
+    board.otherMessages.channels.length === 1 && !board.otherMessages.isMissing;
+  void runAction(
+    OTHER_READ,
+    () => api("POST", "/api/channel-messages/read", { channels: [readMarkOf(channel)] }),
+    {
+      onSuccess: () => {
+        ui.openChannels.delete(channel.channelId);
+        (leavesSectionEmpty ? dom.listHeading : dom.otherToggle).focus();
+        announce([`Marked ${channel.label} read`]);
+      },
+    },
+  );
+}
+
+function markAllOtherRead() {
+  const channels = board.otherMessages.channels.map(readMarkOf);
+  void runAction(OTHER_READ, () => api("POST", "/api/channel-messages/read-all", { channels }), {
+    onSuccess: () => {
+      ui.openChannels.clear();
+      dom.listHeading.focus();
+      announce(["Marked all other messages read"]);
+    },
+  });
+}
+
 function setSort(sortBy) {
   ui.sortBy = sortBy;
   ui.sortDir = SORTS[sortBy].initial;
@@ -1469,6 +1542,7 @@ function render() {
   renderHeader();
   renderToolbar();
   renderCards();
+  renderOtherMessages();
   renderDetail();
   renderCompose();
   placeToasts();
@@ -1714,6 +1788,99 @@ function updateSectionHeader(node, section, collapsed) {
   if (node.toggle === null) return;
   node.toggle.setAttribute("aria-expanded", String(!collapsed));
   setText(node.count, String(section.cards.length));
+}
+
+function renderOtherMessages() {
+  const other = board.otherMessages;
+  dom.otherMessages.hidden = !board.loaded || (other.total === 0 && !other.isMissing);
+  dom.otherToggle.setAttribute("aria-expanded", String(ui.otherOpen));
+  setText(dom.otherCount, String(other.total));
+  dom.otherMissing.hidden = !other.isMissing;
+  const isMarking = requests.inFlight.has(OTHER_READ);
+  setDisabled(dom.otherReadAll, isMarking);
+  setBusy(dom.otherReadAll, isMarking);
+  setText(dom.otherError, requests.errors.get(OTHER_READ) ?? "");
+  dom.otherChannels.hidden = !ui.otherOpen;
+  if (!ui.otherOpen) return;
+  const channels = other.channels.map((channel) => ({
+    ...channel,
+    isOpen: ui.openChannels.has(channel.channelId),
+    isMarking,
+  }));
+  syncSection(dom.otherChannels, JSON.stringify(channels), () => channels.map(otherChannelItem));
+}
+
+function otherChannelItem(channel) {
+  const listId = `other-channel-${channel.channelId}`;
+  const messages =
+    channel.messages === null
+      ? [el("li", { class: "hint", text: OTHER_LOADING_MESSAGE })]
+      : channel.messages.map(otherMessageItem);
+  return el(
+    "li",
+    { class: "other-channel" },
+    el(
+      "div",
+      { class: "other-channel-head" },
+      el(
+        "button",
+        {
+          type: "button",
+          class: "other-channel-toggle",
+          "aria-expanded": String(channel.isOpen),
+          "aria-controls": listId,
+          "data-focus-key": scopeOf("other-channel", channel.channelId),
+          onclick: () => toggleOtherChannel(channel.channelId),
+        },
+        icon("chevron"),
+        el("span", { class: "other-channel-name", text: channel.label }),
+        el("span", { class: "section-count", text: String(channel.count) }),
+        el("span", { class: "sr-only", text: channel.count === 1 ? " message" : " messages" }),
+        timeNode(slackSeconds(channel.latestTs), "other-channel-time"),
+      ),
+      el(
+        "button",
+        {
+          type: "button",
+          class: "button-link button-link--small",
+          "aria-label": `Mark ${channel.label} read`,
+          "aria-disabled": String(channel.isMarking),
+          "aria-busy": String(channel.isMarking),
+          "data-focus-key": scopeOf(OTHER_READ, channel.channelId),
+          onclick: () => markChannelRead(channel),
+        },
+        "Mark read",
+      ),
+    ),
+    el("ul", { id: listId, class: "other-list", hidden: !channel.isOpen }, ...messages),
+  );
+}
+
+function otherMessageItem(message) {
+  const href = safeHref(message.permalink);
+  return el(
+    "li",
+    { class: "other-message" },
+    avatar(message.authorName, "avatar--36"),
+    el(
+      "div",
+      { class: "other-message-body" },
+      el(
+        "p",
+        { class: "other-message-meta" },
+        el("span", { class: "bubble-author", text: message.authorName }),
+        timeNode(slackSeconds(message.ts), "bubble-time"),
+        href === null ? null : externalLink(href, "Open in Slack", "other-message-link"),
+      ),
+      message.text === ""
+        ? el("p", { class: "hint", text: OTHER_NO_TEXT_MESSAGE })
+        : el(
+            "p",
+            { class: "bubble-text" },
+            ...messageSegments(message.text, null).map(segmentNode),
+          ),
+    ),
+  );
 }
 
 function cardItem(card, matches, query, stagger) {
@@ -3066,6 +3233,11 @@ function bindEvents() {
   dom.clearFilters.addEventListener("click", () => clearFilters(focusFirstTypeChip));
   dom.clearAll.addEventListener("click", () => clearFilters(() => dom.filtersButton.focus()));
   dom.emptyClear.addEventListener("click", clearSearchAndFilters);
+  dom.otherToggle.addEventListener("click", toggleOtherMessages);
+  dom.otherReadAll.addEventListener(
+    "click",
+    () => !isDisabled(dom.otherReadAll) && markAllOtherRead(),
+  );
   document.addEventListener("pointerdown", onOutsidePointer);
   document.addEventListener("keydown", onShortcutKeydown);
   for (const dialog of [dom.detailDialog, dom.composeDialog]) {
