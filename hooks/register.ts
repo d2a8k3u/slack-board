@@ -432,7 +432,7 @@ const execute = async (
       return {
         ok: false,
         error: `Step ${index + 1} of ${proposal.steps.length} failed, ${done}: ${messageOf(error)}`,
-        remaining: { summary: proposal.summary, steps: proposal.steps.slice(index) },
+        remaining: { ...proposal, steps: proposal.steps.slice(index) },
       };
     }
   }

@@ -262,6 +262,31 @@ test("runs an approved call of a connector tool with exactly the input that was 
   expect(board.finished).toEqual([{ id: 8, outcome: { ok: true } }]);
 });
 
+test("keeps the thread a reply goes to in the steps that did not run, so approving again replies in the same thread", async ($, on) => {
+  const steps = [
+    { type: "slack_reaction", emoji: "eyes" },
+    { type: "slack_reply", text: "Looking into it." },
+  ];
+  const proposal = { summary: "React and reply", steps, replyToTs: "1795000000.000050" };
+  const board = await startBoard(
+    $,
+    on,
+    [{ id: 11, kind: "execute", input: { proposal }, card: CARD }],
+    () => textResult("invalid_name", true),
+  );
+
+  expect(board.finished).toEqual([
+    {
+      id: 11,
+      outcome: {
+        ok: false,
+        error: "Step 1 of 2 failed, nothing was sent: slack_add_reaction failed: invalid_name",
+        remaining: proposal,
+      },
+    },
+  ]);
+});
+
 test("a finished request leaves no error on the status line", async ($, on) => {
   const board = await startBoard($, on, [
     { id: 10, kind: "execute", input: { proposal: { summary: "Nothing", steps: [] } }, card: CARD },
