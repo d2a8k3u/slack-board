@@ -4,7 +4,7 @@ Run `/board` in Claude Code. The board opens in your browser at `http://127.0.0.
 
 ## Read what is waiting
 
-Each card is one conversation: a DM, a group DM, a thread, or a channel message that mentions you. The badge says what it needs from you:
+Each card is one conversation: a DM, a group DM, a thread, or a channel message that mentions you or uses `@here`, `@channel` or `@everyone`. The badge says what it needs from you:
 
 | Badge | Meaning |
 | --- | --- |
@@ -27,6 +27,16 @@ A card leaves the board when you answer in Slack, when a reply or reaction you a
 
 A mention in a message shows the person's name. Click it to start a new message to them.
 
+## Other messages
+
+Other messages, below all cards, collects what people and bots post in the public and private channels you are a member of and that no card holds. Thread replies stay out; you see what Slack's channel view shows. The section is collapsed when the board opens, and its header shows how many messages it holds. It is hidden while it is empty.
+
+Open it to see one row per channel with the number of messages and the time of the latest. Open a channel to read its messages; Open in Slack goes to each one. Mark read on a channel removes its messages from the board, and Mark all read empties the section. Neither changes anything in Slack, and a message you read in Slack stays here until you mark it read on the board. A message older than `lookback_days` leaves the section on its own.
+
+When Slack has more messages since the previous sync than the board loads, the section says that some are missing. The note stays until you press Mark all read, or for `lookback_days`.
+
+These messages get no priority, drafts, Actions or notifications, and search and filters cover only cards. Messages that bots post as blocks show no text on the board; open them in Slack.
+
 ## Read the conversation
 
 Open a card. Conversation shows the whole thread or DM as Slack has it, up to its last 30 messages: other people on the left, your own messages on the right, and a "New since your last reply" line where the messages waiting for you start. The board reads it from Slack when you open the card and again when a new message arrives. Until that read is done, you see only the messages waiting for you.
@@ -47,11 +57,28 @@ With `polish_replies` turned off in the [settings](settings.md), Draft and Send 
 
 Click any message in the conversation, yours included. A box opens under it: press Draft thread reply to have Claude write it, or Send as written to send your text as it is. The reply goes into that message's thread, and a reaction goes on that message.
 
+## Mention people and channels
+
+Type `@` at the start of a word to mention someone, or `#` to link a channel. This works in the reply box of any card, a new message included, in a thread reply box and in the reply text of a proposal. A list opens and narrows as you type:
+
+- `@` lists the people in this conversation first, then people from your other conversations and earlier searches, then what a Slack search finds. On a channel card it also offers `@here`, `@channel` and `@everyone`.
+- `#` lists channels from your conversations and earlier searches, then what a Slack search finds.
+
+The arrow keys move through the list, Enter or Tab picks an entry, and Esc closes the list and keeps what you typed. When nothing matches, the list closes.
+
+A picked entry shows as `@Name` or `#channel`, and the line under the box says who your text notifies and which channels it links. Change or delete any part of an entry and it becomes plain text. Text you type without picking it from the list stays plain text: it notifies nobody and links nothing.
+
+Send as written delivers each entry as a Slack mention or channel link. With Draft, Claude keeps every mention and channel link from your note and adds none of its own, so the proposal shows exactly who will be notified before you approve. If Claude's draft changes them, the card shows an error: draft again or send your note as written. A note you have not sent keeps its entries when you come back to the card.
+
+Prompts in Actions have no list. User groups such as `@backend` are not offered: Slack gives the board a group's ID but not its name.
+
 ## Ask Claude about a conversation
 
 Open Actions at the top of the card and write a prompt the way you would in Claude Code, for example "find the ticket related to the one in this message" or "move PROJ-123 to review and comment that the fix is on staging". Press Run or Ctrl+Enter.
 
-Claude works on it with the conversation, the tickets on the card and the earlier prompts, using your claude.ai connectors and, when installed, the official Slack plugin. It answers in Actions and names the tools it read from. Tools that only read run right away. Anything that would change something (a Slack message, a Jira comment, a page in another tool) comes back as steps in Claude's proposal, and nothing runs until you approve them. A step that calls another connector's tool shows the exact input it will send.
+Claude works on it with the conversation, the tickets on the card and the earlier prompts, using your claude.ai connectors and, when installed, the official Slack plugin. It answers in Actions and names the tools it read from. Tools that only read run right away. Anything that would change something (a Slack message, a Jira comment, a page in another tool) comes back as steps under Claude's answer, with their own Approve and Discard, and nothing runs until you approve them. A step that calls another connector's tool shows the exact input it will send. A card that opens with steps waiting opens Actions with it.
+
+Steps from Actions and a draft from the reply box wait separately; neither replaces the other. Claude sees the steps that wait when you write the next prompt: when its answer brings steps, they replace the waiting ones and move under that answer, and an answer without steps leaves them as they are. If a step fails, the error shows in Actions and only the steps that did not run stay under the answer, so approving again never runs anything twice.
 
 A long list of prompts and answers scrolls the same way as the conversation.
 

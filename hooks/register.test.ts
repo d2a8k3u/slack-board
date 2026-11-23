@@ -1,5 +1,6 @@
 import type { CommandRunInput, McpToolResult, On, ProcessRunResult, ToolInfo } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
+import { MENTIONS_CHANGED } from "../core/proposal.ts";
 
 const BOARD_COMMAND: CommandRunInput = {
   command: "board",
@@ -103,13 +104,18 @@ const connectsBoard = (on: On): void => {
 
 type Call = { server: string; tool: string; args: Record<string, unknown> };
 
+const SYNC_WINDOW = { granted: true, after: 1795000000, startedAt: "2026-11-23T10:00:00.000Z" };
+const REFUSED_SYNC = { granted: false, after: 0, startedAt: "" };
+
 const startBoard = async (
   $: { session: { start: (e: never) => Promise<unknown> } },
   on: On,
   requests: unknown[],
   connectorAnswer: (call: Call) => McpToolResult = () => textResult("{}"),
+  { isSyncGranted = false }: { isSyncGranted?: boolean } = {},
 ) => {
   const clock = mock.clock(on);
+  const ingested: Record<string, unknown>[] = [];
   const finished: { id: unknown; outcome: unknown }[] = [];
   const connectorCalls: Call[] = [];
   const registered: Record<string, unknown>[] = [];
@@ -146,12 +152,16 @@ const startBoard = async (
       return { value: textResult("ok") };
     }
     if (e.tool === "begin_sync")
-      return { value: textResult(JSON.stringify({ granted: false, after: 0, startedAt: "" })) };
+      return { value: textResult(JSON.stringify(isSyncGranted ? SYNC_WINDOW : REFUSED_SYNC)) };
+    if (e.tool === "ingest") {
+      ingested.push(e.args);
+      return { value: textResult(JSON.stringify({ cards: 0, rankingBatches: 0, news: [] })) };
+    }
     return { value: boardServerAnswer(e.server, e.tool) };
   });
   await $.session.start({ cwd: "/", surface: "desktop", isInteractive: true } as never);
   await clock.advance(WORKER_TICK_MS);
-  return { finished, connectorCalls, registered, spawned, statuses };
+  return { finished, connectorCalls, registered, spawned, statuses, ingested };
 };
 
 test("/board opens the board right after session start, before any tool is listed", async ($, on) => {
@@ -213,6 +223,46 @@ test(
   },
 );
 
+test(
+  "gives a prompt the steps still waiting in Actions, so Claude's answer revises that version",
+  STYLE,
+  async ($, on) => {
+    const waiting = {
+      summary: "Comment",
+      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+    };
+    const card = {
+      ...CARD,
+      actionProposal: { turn: 1, proposal: waiting, approveCloses: false, isRunning: false },
+    };
+
+    const board = await startBoard($, on, [
+      { id: 9, kind: "act", input: { text: "Also move it to review" }, card },
+    ]);
+
+    expect(String(board.spawned[0]?.prompt)).toContain(
+      `<waiting_steps>\n${JSON.stringify(waiting)}\n</waiting_steps>`,
+    );
+  },
+);
+
+test("refuses a draft that drops a mention the note picked", STYLE, async ($, on) => {
+  const draft = { summary: "Reply", steps: [{ type: "slack_reply", text: "Ana, it is done." }] };
+  on("model.complete", () => ({
+    value: {
+      isAnswered: true,
+      text: JSON.stringify(draft),
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }));
+
+  const board = await startBoard($, on, [
+    { id: 12, kind: "propose", input: { text: "tell <@U_ANA|Ana Novak> it is done" }, card: CARD },
+  ]);
+
+  expect(board.finished).toEqual([{ id: 12, outcome: { ok: false, error: MENTIONS_CHANGED } }]);
+});
+
 test("runs an approved call of a connector tool with exactly the input that was approved", async ($, on) => {
   const step = { type: "tool_call", tool: CREATE_PAGE, input: { title: "Notes", body: "PROJ-1" } };
   const board = await startBoard($, on, [
@@ -228,6 +278,31 @@ test("runs an approved call of a connector tool with exactly the input that was 
     { server: NOTION, tool: "notion-create-pages", args: { title: "Notes", body: "PROJ-1" } },
   ]);
   expect(board.finished).toEqual([{ id: 8, outcome: { ok: true } }]);
+});
+
+test("keeps the thread a reply goes to in the steps that did not run, so approving again replies in the same thread", async ($, on) => {
+  const steps = [
+    { type: "slack_reaction", emoji: "eyes" },
+    { type: "slack_reply", text: "Looking into it." },
+  ];
+  const proposal = { summary: "React and reply", steps, replyToTs: "1795000000.000050" };
+  const board = await startBoard(
+    $,
+    on,
+    [{ id: 11, kind: "execute", input: { proposal }, card: CARD }],
+    () => textResult("invalid_name", true),
+  );
+
+  expect(board.finished).toEqual([
+    {
+      id: 11,
+      outcome: {
+        ok: false,
+        error: "Step 1 of 2 failed, nothing was sent: slack_add_reaction failed: invalid_name",
+        remaining: proposal,
+      },
+    },
+  ]);
 });
 
 test("a finished request leaves no error on the status line", async ($, on) => {
@@ -297,4 +372,83 @@ test("reads a thread from Slack and hands its messages to the board", async ($, 
       },
     },
   ]);
+});
+
+const SEARCH_TOOL = "slack_search_public_and_private";
+const OTHERS_IN_MY_CHANNELS = "-from:<@U0ME>";
+const MAX_SEARCH_PAGES = 5;
+
+const searchPage = (blocks: string[], cursor: string | null): McpToolResult =>
+  textResult(
+    JSON.stringify({
+      results: blocks.join(""),
+      pagination_info:
+        cursor === null
+          ? "End of results"
+          : `For the next page of results use cursor \`${cursor}\``,
+    }),
+  );
+
+const channelResult = (page: number): string =>
+  [
+    "### Result 1 of 1",
+    "Channel: #backend (ID: C01)",
+    "From: Bob Kral (ID: U_BOB)",
+    `Message_ts: 1795000000.00000${page}`,
+    `Permalink: [link](https://example.slack.com/archives/C01/p179500000000000${page})`,
+    "Text: ",
+    `news ${page}`,
+    "",
+    "---",
+    "",
+  ].join("\n");
+
+const syncChannelPages = ($: Parameters<typeof startBoard>[0], on: On, lastPage: number) =>
+  startBoard(
+    $,
+    on,
+    [{ id: 11, kind: "sync", input: {}, card: null }],
+    ({ tool, args }) => {
+      if (tool !== SEARCH_TOOL || args.filters !== OTHERS_IN_MY_CHANNELS)
+        return searchPage([], null);
+      const page = args.cursor === undefined ? 1 : Number(String(args.cursor).slice(1));
+      return searchPage([channelResult(page)], page === lastPage ? null : `p${page + 1}`);
+    },
+    { isSyncGranted: true },
+  );
+
+test("searches my channels for what people and bots posted, and hands it to the board with the lookback", async ($, on) => {
+  const board = await syncChannelPages($, on, MAX_SEARCH_PAGES + 1);
+
+  const searches = board.connectorCalls.filter(
+    ({ args }) => args.filters === OTHERS_IN_MY_CHANNELS,
+  );
+  expect(searches[0]?.args).toEqual({
+    filters: OTHERS_IN_MY_CHANNELS,
+    channel_types: "public_channel,private_channel",
+    only_my_channels: true,
+    include_bots: true,
+    after: "1795000000",
+    sort: "timestamp",
+    response_format: "detailed",
+    include_context: false,
+    limit: 20,
+    natural_language_query: "",
+  });
+  const [sync] = board.ingested;
+  expect({
+    texts: (sync?.channelHits as { text: string }[] | undefined)?.map((hit) => hit.text),
+    hasMore: sync?.hasMoreChannelHits,
+    lookbackDays: sync?.lookbackDays,
+  }).toEqual({
+    texts: ["news 1", "news 2", "news 3", "news 4", "news 5"],
+    hasMore: true,
+    lookbackDays: 7,
+  });
+});
+
+test("tells the board nothing is missing when the last page it reads is Slack's last", async ($, on) => {
+  const board = await syncChannelPages($, on, MAX_SEARCH_PAGES);
+
+  expect(board.ingested[0]?.hasMoreChannelHits).toBe(false);
 });

@@ -24,6 +24,8 @@ import {
   TYPE_LABELS,
   titleRanges,
 } from "./board-view.js";
+import { mentionField } from "./mention-field.js";
+import { mentionChoices } from "./mentions.js";
 import { cardNotices, newsNotices, syncNotices } from "./notifications.js";
 import { safeHref, slackTokens } from "./slack-text.js";
 
@@ -53,6 +55,7 @@ const NOTIFY_ICON_PX = 18;
 const PEOPLE_DEBOUNCE_MS = 120;
 const LOOKUP_DEBOUNCE_MS = 500;
 const LOOKUP_MIN_CHARS = 2;
+const SINGLE_WORD = /^\S+$/;
 const TIME_REFRESH_MS = 30_000;
 const ANNOUNCE_DELAY_MS = 60;
 const MS_PER_SECOND = 1000;
@@ -93,8 +96,16 @@ const EMPTY_COMPOSER_MESSAGE = "Write a reply, an emoji or an instruction first.
 const EMPTY_ACTION_MESSAGE = "Write a prompt first.";
 const ACTIONS_INTRO =
   "Write a prompt the way you would in Claude Code. Claude works on it with this conversation and answers here.";
+const RUNNING_STEPS_WORK = {
+  title: "Sending.",
+  text: " Claude is running the steps you approved.",
+};
 const HISTORY_ERROR_PREFIX = "Earlier messages could not be loaded from Slack: ";
 const EMPTY_THREAD_MESSAGE = "Write your reply first.";
+const NO_OTHER_MESSAGES = { total: 0, isMissing: false, channels: [] };
+const OTHER_READ = "other-read";
+const OTHER_LOADING_MESSAGE = "Loading messages…";
+const OTHER_NO_TEXT_MESSAGE = "No text here. Open it in Slack to see it.";
 const BELL_PATH = "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0";
 const ICON_SHAPES = {
   external: { width: 2, shapes: [["path", { d: "M14 5h5v5M19 5l-8 8M18 14v5H5V6h5" }]] },
@@ -237,6 +248,13 @@ const dom = {
   emptyState: byId("empty-state"),
   emptyClear: byId("empty-clear"),
   cardSections: byId("card-sections"),
+  otherMessages: byId("other-messages"),
+  otherToggle: byId("other-toggle"),
+  otherCount: byId("other-count"),
+  otherReadAll: byId("other-read-all"),
+  otherMissing: byId("other-missing"),
+  otherError: byId("other-error"),
+  otherChannels: byId("other-channels"),
   detailDialog: byId("detail-dialog"),
   composeDialog: byId("compose-dialog"),
   composeClose: byId("compose-close"),
@@ -261,6 +279,7 @@ const board = {
   cards: [],
   sync: { lastSyncAt: null, lastError: null, isRunning: false },
   news: null,
+  otherMessages: NO_OTHER_MESSAGES,
   notify: ALL_NOTICES_ON,
   lookup: null,
   polish: true,
@@ -286,6 +305,8 @@ const ui = {
   actionsOpen: false,
   replyToTs: null,
   pendingOpenKey: null,
+  otherOpen: false,
+  openChannels: new Set(),
 };
 
 const memory = {
@@ -294,6 +315,7 @@ const memory = {
   threadDrafts: new Map(),
   notes: new Map(),
   edits: new Map(),
+  actionEdits: new Map(),
   started: new Map(),
   opened: readOpened(),
 };
@@ -306,9 +328,21 @@ const compose = {
   peopleRequest: 0,
   peopleTimer: 0,
   lookupTimer: 0,
-  requestedLookups: new Set(),
   lookupSignature: "",
   error: null,
+};
+
+const lookups = { requested: new Set() };
+
+const mention = {
+  searched: "",
+  loaded: "",
+  people: [],
+  request: 0,
+  peopleTimer: 0,
+  lookupTimer: 0,
+  error: null,
+  refresh: null,
 };
 
 const cardNodes = new Map();
@@ -731,27 +765,27 @@ function personOptions() {
   );
 }
 
-function editsFor(card) {
-  const signature = JSON.stringify(card.proposal);
-  const current = memory.edits.get(card.key);
+function editsFor(edits, key, proposal) {
+  const signature = JSON.stringify(proposal);
+  const current = edits.get(key);
   if (current?.signature === signature) return current.texts;
   const texts = new Map();
-  memory.edits.set(card.key, { signature, texts });
+  edits.set(key, { signature, texts });
   return texts;
 }
 
-function editedProposal(card) {
-  const texts = editsFor(card);
+function editedProposal(edits, key, proposal) {
+  const texts = editsFor(edits, key, proposal);
   return {
-    ...card.proposal,
-    steps: card.proposal.steps.map((step, index) =>
+    ...proposal,
+    steps: proposal.steps.map((step, index) =>
       step.type === "slack_reply" ? { ...step, text: texts.get(index) ?? step.text } : step,
     ),
   };
 }
 
-function replyPlaceLabel(card) {
-  if (card.proposal?.replyToTs || card.target.threadTs !== null) return "Reply in the thread";
+function replyPlaceLabel(card, proposal) {
+  if (proposal?.replyToTs || card.target.threadTs !== null) return "Reply in the thread";
   if (card.kind === "dm" || card.kind === "group") return "Reply in the DM";
   if (card.kind === "compose") return `Message to ${card.title}`;
   return "Reply in the thread";
@@ -826,6 +860,10 @@ function readState(payload) {
     cards: payload.cards,
     sync: payload.sync,
     news: isObject(payload.news) && Array.isArray(payload.news.items) ? payload.news : null,
+    otherMessages:
+      isObject(payload.otherMessages) && Array.isArray(payload.otherMessages.channels)
+        ? payload.otherMessages
+        : NO_OTHER_MESSAGES,
     lookup: isObject(payload.lookup) ? payload.lookup : null,
     polish: settings.polish !== false,
     notify: Object.fromEntries(
@@ -864,10 +902,15 @@ function refreshNow() {
   return stateChain;
 }
 
+function statePath() {
+  if (!ui.otherOpen || ui.openChannels.size === 0) return "/api/state";
+  return `/api/state?channels=${[...ui.openChannels].map(encodeURIComponent).join(",")}`;
+}
+
 async function loadState() {
   if (board.signedOut) return;
   try {
-    applyState(readState(await api("GET", "/api/state")));
+    applyState(readState(await api("GET", statePath())));
   } catch (error) {
     if (!(error instanceof ApiError)) throw error;
     if (error.status === 401) return;
@@ -884,6 +927,8 @@ function applyState(state) {
   board.cards = state.cards;
   board.sync = state.sync;
   board.news = state.news;
+  board.otherMessages = state.otherMessages;
+  forgetClosedChannels();
   board.notify = state.notify;
   board.lookup = state.lookup;
   board.polish = state.polish;
@@ -895,18 +940,18 @@ function applyState(state) {
   if (ui.openKey !== null && findCard(ui.openKey) === undefined) closeDetail();
   rerunLookupMerge();
   render();
+  mention.refresh?.();
   openPendingCard();
 }
 
 const ANNOUNCEMENTS = {
-  sent: (card) => `Sent: ${card.title}`,
-  failed: (card) => `Failed: ${card.title}. ${card.error}`,
-  proposal: (card) => `Proposal ready: ${card.title}`,
-  answered: (card) => `Claude answered: ${card.title}`,
+  sent: ({ card }) => `Sent: ${card.title}`,
+  failed: ({ card, error }) => `Failed: ${card.title}. ${error}`,
+  proposal: ({ card }) => `Proposal ready: ${card.title}`,
+  answered: ({ card }) => `Claude answered: ${card.title}`,
 };
 
-const announcementsOf = (changes) =>
-  changes.map((change) => ANNOUNCEMENTS[change.kind](change.card));
+const announcementsOf = (changes) => changes.map((change) => ANNOUNCEMENTS[change.kind](change));
 
 function noticesOf(state, changes) {
   const isAllowed = (notice) => state.notify[notice.event];
@@ -1040,6 +1085,7 @@ function forgetMissingCards() {
     memory.actionDrafts,
     memory.notes,
     memory.edits,
+    memory.actionEdits,
     memory.started,
   ];
   for (const store of cardStores) {
@@ -1051,6 +1097,12 @@ function forgetMissingCards() {
   if (staleOpened.length === 0) return;
   for (const key of staleOpened) memory.opened.delete(key);
   writeOpened();
+}
+
+function forgetClosedChannels() {
+  const present = new Set(board.otherMessages.channels.map((channel) => channel.channelId));
+  for (const channelId of ui.openChannels)
+    if (!present.has(channelId)) ui.openChannels.delete(channelId);
 }
 
 function openPendingCard() {
@@ -1139,13 +1191,13 @@ function deliver(key, text, options) {
 }
 
 async function submitComposer(key, submit = deliver, control = CONTROLS.draft) {
-  const field = detail?.composerField;
-  const text = field?.value.trim() ?? "";
+  const mentions = detail?.composerMentions;
+  const text = mentions?.slack().trim() ?? "";
   const scope = scopeOf("propose", key);
-  if (text === "") return rejectSubmit(scope, EMPTY_COMPOSER_MESSAGE, field);
+  if (text === "") return rejectSubmit(scope, EMPTY_COMPOSER_MESSAGE, mentions);
   if (!(await submit(key, text, { scope, control }))) return;
   memory.drafts.delete(key);
-  if (detail?.key === key) detail.composerField.value = "";
+  if (detail?.key === key) detail.composerMentions.set("");
 }
 
 function sendReaction(key, reaction) {
@@ -1164,10 +1216,7 @@ async function runPrompt(key) {
   startWork(key, CONTROLS.run, "act", scope);
   const result = await runAction(scope, () => api("POST", `${cardPath(key)}/act`, { text }), {
     conflictMessage: BUSY_MESSAGE,
-    onSuccess: () => {
-      memory.notes.delete(key);
-      announce(["Claude is working on your prompt"]);
-    },
+    onSuccess: () => announce(["Claude is working on your prompt"]),
   });
   if (!result.ok) return;
   memory.actionDrafts.delete(key);
@@ -1178,10 +1227,10 @@ function requestHistory(key) {
   void runAction(scopeOf("history", key), () => api("POST", `${cardPath(key)}/history`));
 }
 
-async function sendThreadReply(key, ts, field, submit = deliver, control = CONTROLS.draft) {
-  const text = field.value.trim();
+async function sendThreadReply(key, ts, mentions, submit = deliver, control = CONTROLS.draft) {
+  const text = mentions.slack().trim();
   const scope = scopeOf("thread", threadDraftKey(key, ts));
-  if (text === "") return rejectSubmit(scope, EMPTY_THREAD_MESSAGE, field);
+  if (text === "") return rejectSubmit(scope, EMPTY_THREAD_MESSAGE, mentions);
   if (!(await submit(key, text, { scope, control: threadControl(control, ts), replyToTs: ts })))
     return;
   memory.threadDrafts.delete(threadDraftKey(key, ts));
@@ -1197,14 +1246,45 @@ function approve(key) {
   const scope = scopeOf("proposal", key);
   if (card.pending !== null) return rejectSubmit(scope, BUSY_MESSAGE, null);
   startWork(key, CONTROLS.approve, "execute", scope);
+  const proposal = editedProposal(memory.edits, key, card.proposal);
+  void runAction(scope, () => api("POST", `${cardPath(key)}/approve`, { proposal }), {
+    conflictMessage: BUSY_MESSAGE,
+    onSuccess: () => announce(["Approved. Sending."]),
+  });
+}
+
+function approveSteps(key) {
+  const card = findCard(key);
+  const waiting = card?.actionProposal;
+  if (waiting === null || waiting === undefined) return;
+  const scope = scopeOf("steps", key);
+  if (card.pending !== null) return rejectSubmit(scope, BUSY_MESSAGE, null);
+  startWork(key, CONTROLS.approveSteps, "execute", scope);
+  const proposal = editedProposal(memory.actionEdits, key, waiting.proposal);
   void runAction(
     scope,
-    () => api("POST", `${cardPath(key)}/approve`, { proposal: editedProposal(card) }),
+    () => api("POST", `${cardPath(key)}/turns/${waiting.turn}/approve`, { proposal }),
     {
       conflictMessage: BUSY_MESSAGE,
       onSuccess: () => announce(["Approved. Sending."]),
     },
   );
+}
+
+function discardSteps(key) {
+  const card = findCard(key);
+  const waiting = card?.actionProposal;
+  if (waiting === null || waiting === undefined) return;
+  const scope = scopeOf("steps", key);
+  if (card.pending !== null) return rejectSubmit(scope, BUSY_MESSAGE, null);
+  startWork(key, CONTROLS.discardSteps, null, scope);
+  void runAction(scope, () => api("POST", `${cardPath(key)}/turns/${waiting.turn}/discard`), {
+    conflictMessage: BUSY_MESSAGE,
+    onSuccess: () => {
+      memory.actionEdits.delete(key);
+      announce(["Steps discarded"]);
+    },
+  });
 }
 
 function discard(key) {
@@ -1262,7 +1342,7 @@ function openCard(key, focusTarget = "heading") {
   ui.filtersOpen = false;
   ui.openKey = key;
   ui.selectedKey = key;
-  ui.actionsOpen = false;
+  ui.actionsOpen = card.actionProposal !== null;
   ui.replyToTs = null;
   detail = buildDetail(card);
   dom.detailDialog.replaceChildren(detail.root);
@@ -1297,13 +1377,6 @@ function toggleActions() {
   ui.actionsOpen = !ui.actionsOpen;
   render();
   if (ui.actionsOpen) detail.actionField.focus();
-}
-
-function focusProposal() {
-  const approve = detail?.proposalControls?.approve;
-  if (approve === undefined) return;
-  approve.scrollIntoView({ block: "center" });
-  approve.focus();
 }
 
 function toggleReply(ts) {
@@ -1432,6 +1505,48 @@ function toggleSection(sectionKey) {
   render();
 }
 
+function toggleOtherMessages() {
+  ui.otherOpen = !ui.otherOpen;
+  render();
+  if (ui.otherOpen && ui.openChannels.size > 0) void refreshNow();
+}
+
+function toggleOtherChannel(channelId) {
+  if (ui.openChannels.has(channelId)) ui.openChannels.delete(channelId);
+  else ui.openChannels.add(channelId);
+  render();
+  if (ui.openChannels.has(channelId)) void refreshNow();
+}
+
+const readMarkOf = (channel) => ({ channelId: channel.channelId, throughTs: channel.latestTs });
+
+function markChannelRead(channel) {
+  const leavesSectionEmpty =
+    board.otherMessages.channels.length === 1 && !board.otherMessages.isMissing;
+  void runAction(
+    OTHER_READ,
+    () => api("POST", "/api/channel-messages/read", { channels: [readMarkOf(channel)] }),
+    {
+      onSuccess: () => {
+        ui.openChannels.delete(channel.channelId);
+        (leavesSectionEmpty ? dom.listHeading : dom.otherToggle).focus();
+        announce([`Marked ${channel.label} read`]);
+      },
+    },
+  );
+}
+
+function markAllOtherRead() {
+  const channels = board.otherMessages.channels.map(readMarkOf);
+  void runAction(OTHER_READ, () => api("POST", "/api/channel-messages/read-all", { channels }), {
+    onSuccess: () => {
+      ui.openChannels.clear();
+      dom.listHeading.focus();
+      announce(["Marked all other messages read"]);
+    },
+  });
+}
+
 function setSort(sortBy) {
   ui.sortBy = sortBy;
   ui.sortDir = SORTS[sortBy].initial;
@@ -1469,6 +1584,7 @@ function render() {
   renderHeader();
   renderToolbar();
   renderCards();
+  renderOtherMessages();
   renderDetail();
   renderCompose();
   placeToasts();
@@ -1714,6 +1830,99 @@ function updateSectionHeader(node, section, collapsed) {
   if (node.toggle === null) return;
   node.toggle.setAttribute("aria-expanded", String(!collapsed));
   setText(node.count, String(section.cards.length));
+}
+
+function renderOtherMessages() {
+  const other = board.otherMessages;
+  dom.otherMessages.hidden = !board.loaded || (other.total === 0 && !other.isMissing);
+  dom.otherToggle.setAttribute("aria-expanded", String(ui.otherOpen));
+  setText(dom.otherCount, String(other.total));
+  dom.otherMissing.hidden = !other.isMissing;
+  const isMarking = requests.inFlight.has(OTHER_READ);
+  setDisabled(dom.otherReadAll, isMarking);
+  setBusy(dom.otherReadAll, isMarking);
+  setText(dom.otherError, requests.errors.get(OTHER_READ) ?? "");
+  dom.otherChannels.hidden = !ui.otherOpen;
+  if (!ui.otherOpen) return;
+  const channels = other.channels.map((channel) => ({
+    ...channel,
+    isOpen: ui.openChannels.has(channel.channelId),
+    isMarking,
+  }));
+  syncSection(dom.otherChannels, JSON.stringify(channels), () => channels.map(otherChannelItem));
+}
+
+function otherChannelItem(channel) {
+  const listId = `other-channel-${channel.channelId}`;
+  const messages =
+    channel.messages === null
+      ? [el("li", { class: "hint", text: OTHER_LOADING_MESSAGE })]
+      : channel.messages.map(otherMessageItem);
+  return el(
+    "li",
+    { class: "other-channel" },
+    el(
+      "div",
+      { class: "other-channel-head" },
+      el(
+        "button",
+        {
+          type: "button",
+          class: "other-channel-toggle",
+          "aria-expanded": String(channel.isOpen),
+          "aria-controls": listId,
+          "data-focus-key": scopeOf("other-channel", channel.channelId),
+          onclick: () => toggleOtherChannel(channel.channelId),
+        },
+        icon("chevron"),
+        el("span", { class: "other-channel-name", text: channel.label }),
+        el("span", { class: "section-count", text: String(channel.count) }),
+        el("span", { class: "sr-only", text: channel.count === 1 ? " message" : " messages" }),
+        timeNode(slackSeconds(channel.latestTs), "other-channel-time"),
+      ),
+      el(
+        "button",
+        {
+          type: "button",
+          class: "button-link button-link--small",
+          "aria-label": `Mark ${channel.label} read`,
+          "aria-disabled": String(channel.isMarking),
+          "aria-busy": String(channel.isMarking),
+          "data-focus-key": scopeOf(OTHER_READ, channel.channelId),
+          onclick: () => markChannelRead(channel),
+        },
+        "Mark read",
+      ),
+    ),
+    el("ul", { id: listId, class: "other-list", hidden: !channel.isOpen }, ...messages),
+  );
+}
+
+function otherMessageItem(message) {
+  const href = safeHref(message.permalink);
+  return el(
+    "li",
+    { class: "other-message" },
+    avatar(message.authorName, "avatar--36"),
+    el(
+      "div",
+      { class: "other-message-body" },
+      el(
+        "p",
+        { class: "other-message-meta" },
+        el("span", { class: "bubble-author", text: message.authorName }),
+        timeNode(slackSeconds(message.ts), "bubble-time"),
+        href === null ? null : externalLink(href, "Open in Slack", "other-message-link"),
+      ),
+      message.text === ""
+        ? el("p", { class: "hint", text: OTHER_NO_TEXT_MESSAGE })
+        : el(
+            "p",
+            { class: "bubble-text" },
+            ...messageSegments(message.text, null).map(segmentNode),
+          ),
+    ),
+  );
 }
 
 function cardItem(card, matches, query, stagger) {
@@ -1962,12 +2171,7 @@ function buildActions(key, refs) {
     "aria-label": "Prompts and answers",
     tabindex: "0",
   });
-  refs.actionWorking = el(
-    "p",
-    { class: "action-working", role: "status", hidden: true },
-    el("span", { class: "sb-dot working-dot", "aria-hidden": "true" }),
-    el("span", {}, el("strong", { text: "Claude is working." }), " The answer shows up here."),
-  );
+  refs.actionWorking = el("p", { class: "action-working", role: "status", hidden: true });
   refs.actionIntro = el("p", { class: "action-intro", text: ACTIONS_INTRO });
   refs.actionField = el("textarea", {
     id: "action-note",
@@ -2061,9 +2265,11 @@ function buildComposer(key, refs) {
     "aria-describedby": "composer-status",
     onkeydown: submitOnModEnter,
   });
-  refs.composerField.value = memory.drafts.get(key) ?? "";
-  refs.composerField.addEventListener("input", () =>
-    memory.drafts.set(key, refs.composerField.value),
+  refs.composerMentions = mentionsFor(
+    refs.composerField,
+    key,
+    memory.drafts.get(key) ?? "",
+    (slack) => memory.drafts.set(key, slack),
   );
   refs.reactionButtons = QUICK_REACTIONS.map((reaction) =>
     el(
@@ -2113,7 +2319,7 @@ function buildComposer(key, refs) {
       class: "field-label",
       text: board.polish ? "Reply, emoji or instruction" : "Reply or emoji code",
     }),
-    refs.composerField,
+    refs.composerMentions.node,
     el(
       "div",
       { class: "button-row" },
@@ -2171,31 +2377,82 @@ function scrollToEnd(list) {
   list.scrollTop = list.scrollHeight;
 }
 
+function actionWork(card) {
+  if (card.pending?.kind === "act")
+    return { title: "Claude is working.", text: " The answer shows up here." };
+  if (card.actionProposal?.isRunning === true) return RUNNING_STEPS_WORK;
+  return null;
+}
+
 function updateActions(refs, card) {
   const turnsAtEnd = isScrolledToEnd(refs.actionTurns);
   refs.actionsToggle.setAttribute("aria-expanded", String(ui.actionsOpen));
   refs.actionsBody.hidden = !ui.actionsOpen;
   setText(refs.actionCount, String(card.actions.length));
-  refs.actionWorking.hidden = card.pending?.kind !== "act";
+  const work = actionWork(card);
+  refs.actionWorking.hidden = work === null;
+  syncSection(refs.actionWorking, JSON.stringify(work), () => workNodes(work));
   refs.actionIntro.hidden = card.actions.length > 0;
   refs.actionTurns.hidden = card.actions.length === 0;
   const ticketKeys = boardTicketKeys();
+  const waiting = card.actionProposal;
   syncSection(
     refs.actionTurns,
-    JSON.stringify([card.actions, card.proposal?.steps.length ?? 0, ticketKeys]),
-    () => turnNodes(card, ticketKeys),
+    JSON.stringify([
+      card.actions,
+      waiting?.turn,
+      waiting?.proposal,
+      waiting?.approveCloses,
+      replyPlaceLabel(card, waiting?.proposal),
+      ticketKeys,
+    ]),
+    () => turnNodes(card, ticketKeys, refs),
   );
   if (turnsAtEnd) scrollToEnd(refs.actionTurns);
   const scope = scopeOf("action", card.key);
   setDisabled(refs.actionSubmit, card.pending !== null || requests.inFlight.has(scope));
   setBusy(refs.actionSubmit, spinningControlOf(card) === CONTROLS.run);
   setText(refs.actionError, requests.errors.get(scope) ?? "");
+  updateApprovalControls(refs.stepsControls, card, scopeOf("steps", card.key), {
+    approve: CONTROLS.approveSteps,
+    discard: CONTROLS.discardSteps,
+  });
 }
 
-function turnNodes(card, ticketKeys) {
+function stepsNode(card, refs) {
+  const waiting = card.actionProposal;
+  const parts = approvalParts(waiting.proposal, waiting.approveCloses, {
+    cardKey: card.key,
+    texts: editsFor(memory.actionEdits, card.key, waiting.proposal),
+    replyLabel: replyPlaceLabel(card, waiting.proposal),
+    idPrefix: "actions",
+    onApprove: () => approveSteps(card.key),
+    onDiscard: () => discardSteps(card.key),
+  });
+  refs.stepsControls = parts.controls;
+  return el(
+    "div",
+    { class: "turn-proposal", role: "group", "aria-labelledby": "turn-proposal-label" },
+    el(
+      "div",
+      {},
+      el("p", {
+        id: "turn-proposal-label",
+        class: "turn-proposal-label",
+        text: "Steps to approve",
+      }),
+      el("p", { class: "proposal-summary", text: waiting.proposal.summary }),
+    ),
+    parts.steps,
+    el("div", { class: "turn-proposal-actions" }, ...parts.buttons, parts.hint),
+    parts.error,
+  );
+}
+
+function turnNodes(card, ticketKeys, refs) {
   const pattern = ticketPattern(ticketKeys);
-  const answered = card.actions.findLastIndex((turn) => turn.author === "claude" && !turn.isFailed);
-  const waitingSteps = card.proposal?.steps.length ?? 0;
+  const stepsTurn = card.actionProposal?.turn ?? null;
+  refs.stepsControls = null;
   return card.actions.map((turn, index) => {
     const text = el(
       "p",
@@ -2220,13 +2477,7 @@ function turnNodes(card, ticketKeys) {
         turn.tools.length === 0
           ? null
           : el("p", { class: "turn-tools", text: `Looked at ${turn.tools.join(", ")}` }),
-        index === answered && waitingSteps > 0
-          ? el(
-              "button",
-              { type: "button", class: "turn-steps", onclick: focusProposal },
-              `${waitingSteps} ${waitingSteps === 1 ? "step waits" : "steps wait"} for your approval`,
-            )
-          : null,
+        index === stepsTurn ? stepsNode(card, refs) : null,
         el("p", { class: "turn-meta" }, turn.isFailed ? "Failed · " : "Claude · ", at),
       ),
     );
@@ -2367,8 +2618,9 @@ function threadReplyForm(cardKey, message) {
       : "Your thread reply, sent exactly as you write it.",
     onkeydown: submitOnModEnter,
   });
-  field.value = memory.threadDrafts.get(draftKey) ?? "";
-  field.addEventListener("input", () => memory.threadDrafts.set(draftKey, field.value));
+  const mentions = mentionsFor(field, cardKey, memory.threadDrafts.get(draftKey) ?? "", (slack) =>
+    memory.threadDrafts.set(draftKey, slack),
+  );
   const submit = el(
     "button",
     { type: "submit", class: "sb-btn button button-strong button-small" },
@@ -2382,7 +2634,7 @@ function threadReplyForm(cardKey, message) {
           class: "sb-chip button button-outline button-small",
           onclick: (event) =>
             !isDisabled(event.currentTarget) &&
-            void sendThreadReply(cardKey, message.ts, field, sendAsWritten, CONTROLS.send),
+            void sendThreadReply(cardKey, message.ts, mentions, sendAsWritten, CONTROLS.send),
         },
         "Send as written",
       )
@@ -2394,7 +2646,7 @@ function threadReplyForm(cardKey, message) {
       class: "thread-reply sb-section",
       onsubmit: (event) => {
         event.preventDefault();
-        if (!isDisabled(submit)) void sendThreadReply(cardKey, message.ts, field);
+        if (!isDisabled(submit)) void sendThreadReply(cardKey, message.ts, mentions);
       },
     },
     el("label", {
@@ -2404,7 +2656,7 @@ function threadReplyForm(cardKey, message) {
         ? "Reply in the thread of your message"
         : `Reply to ${message.authorName} in a thread`,
     }),
-    field,
+    mentions.node,
     el(
       "div",
       { class: "button-row" },
@@ -2579,14 +2831,15 @@ function updateCardState(refs, card) {
   const note = memory.notes.get(card.key);
   const working = workingMessage(card, note);
   refs.working.hidden = working === null;
-  syncSection(refs.working, JSON.stringify(working), () =>
-    working === null
-      ? []
-      : [
-          el("span", { class: "sb-dot working-dot", "aria-hidden": "true" }),
-          el("span", {}, el("strong", { text: working.title }), working.text),
-        ],
-  );
+  syncSection(refs.working, JSON.stringify(working), () => workNodes(working));
+}
+
+function workNodes(work) {
+  if (work === null) return [];
+  return [
+    el("span", { class: "sb-dot working-dot", "aria-hidden": "true" }),
+    el("span", {}, el("strong", { text: work.title }), work.text),
+  ];
 }
 
 function workingMessage(card, note) {
@@ -2596,12 +2849,24 @@ function workingMessage(card, note) {
       title: "Claude is drafting.",
       text: note === undefined ? "" : ` Your note: “${note}”`,
     };
-  if (pendingKind === "execute")
-    return {
-      title: "Sending.",
-      text: card.proposal === null ? "" : " Claude is running the steps you approved.",
-    };
+  if (pendingKind === "execute" && card.actionProposal?.isRunning !== true)
+    return card.proposal === null ? { title: "Sending.", text: "" } : RUNNING_STEPS_WORK;
   return null;
+}
+
+function updateApprovalControls(controls, card, scope, controlNames) {
+  if (controls === null || controls === undefined) return;
+  const busy = card.pending !== null || requests.inFlight.has(scope);
+  setDisabled(controls.approve, busy);
+  setDisabled(controls.discard, busy);
+  spinOnly(
+    new Map([
+      [controlNames.approve, controls.approve],
+      [controlNames.discard, controls.discard],
+    ]),
+    spinningControlOf(card),
+  );
+  setText(controls.error, requests.errors.get(scope) ?? "");
 }
 
 function updateProposal(refs, card) {
@@ -2614,48 +2879,70 @@ function updateProposal(refs, card) {
   const note = memory.notes.get(card.key) ?? null;
   syncSection(
     refs.proposal,
-    JSON.stringify([card.proposal, card.approveCloses, note, replyPlaceLabel(card)]),
+    JSON.stringify([card.proposal, card.approveCloses, note, replyPlaceLabel(card, card.proposal)]),
     () => proposalNodes(card, note, refs),
   );
-  if (refs.proposalControls === null || refs.proposalControls === undefined) return;
-  const scope = scopeOf("proposal", card.key);
-  const busy = card.pending !== null || requests.inFlight.has(scope);
-  setDisabled(refs.proposalControls.approve, busy);
-  setDisabled(refs.proposalControls.discard, busy);
-  spinOnly(
-    new Map([
-      [CONTROLS.approve, refs.proposalControls.approve],
-      [CONTROLS.discard, refs.proposalControls.discard],
-    ]),
-    spinningControlOf(card),
-  );
-  setText(refs.proposalControls.error, requests.errors.get(scope) ?? "");
+  updateApprovalControls(refs.proposalControls, card, scopeOf("proposal", card.key), {
+    approve: CONTROLS.approve,
+    discard: CONTROLS.discard,
+  });
 }
 
-function proposalNodes(card, note, refs) {
-  const texts = editsFor(card);
+function approvalParts(
+  proposal,
+  approveCloses,
+  { cardKey, texts, replyLabel, idPrefix, onApprove, onDiscard },
+) {
   const approveButton = el(
     "button",
     {
       type: "button",
       class: "sb-btn button button-accent approve-button",
-      onclick: (event) => !isDisabled(event.currentTarget) && approve(card.key),
+      onclick: (event) => !isDisabled(event.currentTarget) && onApprove(),
     },
     icon("check"),
-    card.approveCloses ? "Approve and send" : "Approve and run",
+    approveCloses ? "Approve and send" : "Approve and run",
   );
   const discardButton = el(
     "button",
     {
       type: "button",
       class: "button button-quiet discard-button",
-      onclick: (event) => !isDisabled(event.currentTarget) && discard(card.key),
+      onclick: (event) => !isDisabled(event.currentTarget) && onDiscard(),
     },
     "Discard",
   );
   const error = errorLine();
-  refs.proposalControls = { approve: approveButton, discard: discardButton, error };
-  const label = replyPlaceLabel(card);
+  return {
+    controls: { approve: approveButton, discard: discardButton, error },
+    steps: el(
+      "ol",
+      { class: "steps" },
+      ...proposal.steps.map((step, index) =>
+        stepItem(step, index, { cardKey, texts, replyLabel, idPrefix }),
+      ),
+    ),
+    buttons: [approveButton, discardButton],
+    hint: el("span", {
+      class: "hint proposal-reassure",
+      text: approveCloses
+        ? "Nothing is sent until you approve."
+        : "Nothing runs until you approve. No reply goes out, so the card stays open.",
+    }),
+    error,
+  };
+}
+
+function proposalNodes(card, note, refs) {
+  const parts = approvalParts(card.proposal, card.approveCloses, {
+    cardKey: card.key,
+    texts: editsFor(memory.edits, card.key, card.proposal),
+    replyLabel: replyPlaceLabel(card, card.proposal),
+    idPrefix: "proposal",
+    onApprove: () => approve(card.key),
+    onDiscard: () => discard(card.key),
+  });
+  refs.proposalControls = parts.controls;
   return [
     note === null
       ? null
@@ -2663,7 +2950,7 @@ function proposalNodes(card, note, refs) {
           "div",
           { class: "proposal-note" },
           el("p", { class: "proposal-note-label", text: "Your note" }),
-          el("p", { class: "proposal-note-text", text: `“${note}”` }),
+          el("p", { class: "proposal-note-text", text: `“${plainText(note)}”` }),
         ),
     el(
       "div",
@@ -2674,34 +2961,24 @@ function proposalNodes(card, note, refs) {
         el("h3", { id: "proposal-heading", class: "proposal-title", text: "Claude's proposal" }),
         el("p", { class: "proposal-summary", text: card.proposal.summary }),
       ),
-      el(
-        "ol",
-        { class: "steps" },
-        ...card.proposal.steps.map((step, index) => stepItem(step, index, texts, label)),
-      ),
+      parts.steps,
       el(
         "div",
         { class: "proposal-actions" },
-        approveButton,
-        discardButton,
+        ...parts.buttons,
         el(
           "button",
           { type: "button", class: "button button-quiet new-note-button", onclick: focusComposer },
           "Write a new note",
         ),
-        el("span", {
-          class: "hint proposal-reassure",
-          text: card.approveCloses
-            ? "Nothing is sent until you approve."
-            : "Nothing runs until you approve. No reply goes out, so the card stays open.",
-        }),
+        parts.hint,
       ),
-      error,
+      parts.error,
     ),
   ].filter((node) => node !== null);
 }
 
-function stepItem(step, index, texts, replyLabel) {
+function stepItem(step, index, reply) {
   const isReply = step.type === "slack_reply";
   return el(
     "li",
@@ -2711,7 +2988,7 @@ function stepItem(step, index, texts, replyLabel) {
       "aria-hidden": "true",
       text: String(index + 1),
     }),
-    el("div", { class: "step-content" }, ...stepContent(step, index, texts, replyLabel)),
+    el("div", { class: "step-content" }, ...stepContent(step, index, reply)),
   );
 }
 
@@ -2719,19 +2996,20 @@ const issueChip = (issueKey) => el("span", { class: "key-chip", text: issueKey }
 const connectorToolName = (tool) => tool.split("__").slice(2).join("__") || tool;
 const stepTitle = (...parts) => el("p", { class: "step-title" }, ...parts);
 
-function stepContent(step, index, texts, replyLabel) {
+function stepContent(step, index, { cardKey, texts, replyLabel, idPrefix }) {
   switch (step.type) {
     case "slack_reply": {
-      const fieldId = `reply-step-${index}`;
+      const fieldId = `${idPrefix}-reply-step-${index}`;
       const field = el("textarea", {
         id: fieldId,
         class: "textarea",
         rows: "4",
         "data-focus-key": fieldId,
       });
-      field.value = texts.get(index) ?? step.text;
-      field.addEventListener("input", () => texts.set(index, field.value));
-      return [el("label", { for: fieldId, class: "step-label", text: replyLabel }), field];
+      const mentions = mentionsFor(field, cardKey, texts.get(index) ?? step.text, (slack) =>
+        texts.set(index, slack),
+      );
+      return [el("label", { for: fieldId, class: "step-label", text: replyLabel }), mentions.node];
     }
     case "slack_reaction":
       return [stepTitle(`React with :${String(step.emoji).replace(/^:|:$/g, "")}:`)];
@@ -2816,11 +3094,16 @@ function onComposeInput() {
     () => void loadPeople(query).catch(reportDefect),
     PEOPLE_DEBOUNCE_MS,
   );
-  if (query.length >= LOOKUP_MIN_CHARS && !compose.requestedLookups.has(query))
+  if (query.length >= LOOKUP_MIN_CHARS && !lookups.requested.has(query))
     compose.lookupTimer = setTimeout(
-      () => void requestLookup(query).catch(reportDefect),
+      () => void requestLookup(query, (message) => failComposeLookup(query, message)),
       LOOKUP_DEBOUNCE_MS,
     );
+  renderCompose();
+}
+
+function failComposeLookup(query, message) {
+  if (composeQueryText() === query) compose.error = message;
   renderCompose();
 }
 
@@ -2840,18 +3123,88 @@ async function loadPeople(query) {
   renderCompose();
 }
 
-async function requestLookup(query) {
-  compose.requestedLookups.add(query);
+async function requestLookup(query, onFailure) {
+  lookups.requested.add(query);
   try {
     await api("POST", "/api/lookup", { query });
   } catch (error) {
-    if (!(error instanceof ApiError)) throw error;
-    compose.requestedLookups.delete(query);
-    if (error.status !== 401 && composeQueryText() === query) compose.error = error.message;
-    renderCompose();
+    if (!(error instanceof ApiError)) return reportDefect(error);
+    lookups.requested.delete(query);
+    if (error.status !== 401) onFailure(error.message);
     return;
   }
   void refreshNow();
+}
+
+function searchMentions(trigger, query, refresh) {
+  clearTimeout(mention.peopleTimer);
+  clearTimeout(mention.lookupTimer);
+  const searched = trigger + query;
+  mention.searched = searched;
+  mention.error = null;
+  mention.refresh = refresh;
+  mention.peopleTimer = setTimeout(
+    () => void loadMentionPeople(trigger, query),
+    PEOPLE_DEBOUNCE_MS,
+  );
+  if (query.length >= LOOKUP_MIN_CHARS && SINGLE_WORD.test(query) && !lookups.requested.has(query))
+    mention.lookupTimer = setTimeout(
+      () => void requestLookup(query, (message) => failMentionSearch(searched, message)),
+      LOOKUP_DEBOUNCE_MS,
+    );
+}
+
+function failMentionSearch(searched, message) {
+  if (mention.searched !== searched) return;
+  mention.error = message;
+  mention.refresh?.();
+}
+
+async function loadMentionPeople(trigger, query) {
+  const request = ++mention.request;
+  const kind = trigger === "#" ? "channel" : "person";
+  try {
+    const people = readPeople(
+      await api("GET", `/api/people?q=${encodeURIComponent(query)}&kind=${kind}`),
+    );
+    if (request !== mention.request) return;
+    mention.people = people;
+    mention.loaded = trigger + query;
+  } catch (error) {
+    if (!(error instanceof ApiError)) return reportDefect(error);
+    if (request !== mention.request || error.status === 401) return;
+    mention.error = error.message;
+  }
+  mention.refresh?.();
+}
+
+function mentionChoicesFor(cardKey, trigger, query) {
+  const card = findCard(cardKey);
+  if (card === undefined) return { entries: [], error: null };
+  const searched = trigger + query;
+  const lookup = board.lookup?.query === query ? board.lookup : null;
+  return {
+    entries: mentionChoices({
+      trigger,
+      query,
+      card,
+      people: mention.loaded === searched ? mention.people : [],
+      found: lookup?.results ?? [],
+    }),
+    error: mention.searched === searched ? (mention.error ?? lookup?.error ?? null) : null,
+  };
+}
+
+function mentionsFor(textarea, cardKey, slack, onChange) {
+  return mentionField({
+    textarea,
+    slack,
+    onChange,
+    nameOf: knownName,
+    announce,
+    choices: (trigger, query) => mentionChoicesFor(cardKey, trigger, query),
+    onSearch: searchMentions,
+  });
 }
 
 function currentLookup() {
@@ -2879,7 +3232,7 @@ function mergedRecipients() {
 
 function composeStatusText(query, results) {
   if (compose.peopleQuery === null) return "Searching…";
-  const lookupPending = compose.requestedLookups.has(query) && currentLookup() === null;
+  const lookupPending = lookups.requested.has(query) && currentLookup() === null;
   if (results.length === 0 && !lookupPending)
     return query === "" ? "No recent people yet." : `No person or channel matches “${query}”.`;
   return lookupPending ? "Searching Slack for more matches…" : "";
@@ -3066,6 +3419,11 @@ function bindEvents() {
   dom.clearFilters.addEventListener("click", () => clearFilters(focusFirstTypeChip));
   dom.clearAll.addEventListener("click", () => clearFilters(() => dom.filtersButton.focus()));
   dom.emptyClear.addEventListener("click", clearSearchAndFilters);
+  dom.otherToggle.addEventListener("click", toggleOtherMessages);
+  dom.otherReadAll.addEventListener(
+    "click",
+    () => !isDisabled(dom.otherReadAll) && markAllOtherRead(),
+  );
   document.addEventListener("pointerdown", onOutsidePointer);
   document.addEventListener("keydown", onShortcutKeydown);
   for (const dialog of [dom.detailDialog, dom.composeDialog]) {

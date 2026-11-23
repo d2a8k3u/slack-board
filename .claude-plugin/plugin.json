@@ -1,6 +1,6 @@
 {
   "name": "slack-board",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Board of Slack messages for you: drafts replies in your tone of voice and sends them after your approval",
   "author": {
     "name": "David Kulhanek"
@@ -66,8 +66,8 @@
     },
     "lookback_days": {
       "type": "number",
-      "title": "First sync lookback (days)",
-      "description": "How far back the first sync looks for messages",
+      "title": "Lookback (days)",
+      "description": "How far back the first sync looks for messages, and how long a message stays in Other messages",
       "default": 7
     },
     "notify_new_messages": {

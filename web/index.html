@@ -173,6 +173,23 @@
         <button id="empty-clear" type="button" class="button button-outline">Clear search and filters</button>
       </div>
       <div id="card-sections" class="card-sections"></div>
+
+      <section id="other-messages" class="board-section other-messages" aria-labelledby="other-heading" hidden>
+        <div class="other-head">
+          <h3 id="other-heading" class="section-heading">
+            <button id="other-toggle" type="button" class="section-toggle" aria-expanded="false" aria-controls="other-channels">
+              <svg class="sb-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+              <span class="section-dot section-dot--unranked" aria-hidden="true"></span>
+              <span class="section-label">Other messages</span>
+              <span id="other-count" class="section-count"></span>
+            </button>
+          </h3>
+          <button id="other-read-all" type="button" class="button-link button-link--small" aria-describedby="other-error">Mark all read</button>
+        </div>
+        <p id="other-missing" class="hint other-note" hidden>Slack had more messages since the previous sync than the board loads, so some are missing here. Open Slack to catch up.</p>
+        <p id="other-error" class="field-error" role="alert"></p>
+        <ul id="other-channels" class="other-channels" aria-label="Channels with other messages" hidden></ul>
+      </section>
     </main>
   </div>
 

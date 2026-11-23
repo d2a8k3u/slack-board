@@ -49,7 +49,7 @@ export const compareTs = (left: string, right: string): number => {
   return leftFraction.localeCompare(rightFraction);
 };
 
-const isNewer = (ts: string, than: string | undefined): boolean =>
+export const isNewer = (ts: string, than: string | undefined): boolean =>
   than === undefined || compareTs(ts, than) > 0;
 
 const titleOf = (hit: SlackHit, me: string): string => {
@@ -84,6 +84,10 @@ const messageOf = (hit: SlackHit): CardMessage => ({
 });
 
 const isFromOthers = (hit: SlackHit, me: string): boolean => hit.author.id !== me && !hit.isBot;
+
+const EVERYONE_MENTION = /<!(?:here|channel|everyone)(?:\|[^>]*)?>/;
+
+export const mentionsEveryone = (text: string): boolean => EVERYONE_MENTION.test(text);
 
 const withMessage = (card: InboxCard, message: CardMessage): InboxCard => {
   if (card.messages.some((existing) => existing.ts === message.ts)) return card;

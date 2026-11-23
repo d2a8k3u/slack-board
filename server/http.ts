@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { checkProposal, directProposal, SLACK_TEXT_LIMIT } from "../core/proposal.ts";
-import type { NotifySettings } from "../core/types.ts";
+import type { ChannelRead, NotifySettings, Recipient, StepsApproval } from "../core/types.ts";
 import type { BoardStore } from "./store.ts";
 
 export type BoardServerOptions = {
@@ -15,11 +15,13 @@ export type BoardServerOptions = {
   notify: NotifySettings;
 };
 
+export const MAX_LISTED_CHANNELS = 200;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_INPUT_CHARS = 4000;
 const MAX_QUERY_CHARS = 100;
 const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost"];
 const SLACK_CHANNEL_ID = /^[CDGU][A-Z0-9]{2,}$/;
+const SLACK_TS = /^\d+\.\d+$/;
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
@@ -27,6 +29,8 @@ const STATIC_FILES: Record<string, { file: string; type: string }> = {
   "/slack-text.js": { file: "slack-text.js", type: "text/javascript; charset=utf-8" },
   "/board-view.js": { file: "board-view.js", type: "text/javascript; charset=utf-8" },
   "/notifications.js": { file: "notifications.js", type: "text/javascript; charset=utf-8" },
+  "/mentions.js": { file: "mentions.js", type: "text/javascript; charset=utf-8" },
+  "/mention-field.js": { file: "mention-field.js", type: "text/javascript; charset=utf-8" },
   "/favicon.svg": { file: "favicon.svg", type: "image/svg+xml" },
 };
 
@@ -52,6 +56,18 @@ const refuse = (status: number, message: string): never => {
   throw new HttpRefusal(status, message);
 };
 
+const RECIPIENT_KINDS: readonly Recipient["kind"][] = ["person", "channel"];
+
+const isRecipientKind = (value: string): value is Recipient["kind"] =>
+  (RECIPIENT_KINDS as readonly string[]).includes(value);
+
+const recipientKind = (url: URL): Recipient["kind"] | null => {
+  const kind = url.searchParams.get("kind");
+  if (kind === null) return null;
+  if (!isRecipientKind(kind)) return refuse(400, `kind must be ${RECIPIENT_KINDS.join(" or ")}`);
+  return kind;
+};
+
 const record = (value: unknown): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return refuse(400, "Send a JSON object");
@@ -63,6 +79,32 @@ const boundedText = (value: unknown, name: string, maxChars: number): string => 
     return refuse(400, `${name} must be non-empty text`);
   if (value.length > maxChars) return refuse(400, `${name} holds at most ${maxChars} characters`);
   return value.trim();
+};
+
+const listedChannels = (url: URL): Set<string> => {
+  const listed = url.searchParams.get("channels");
+  if (listed === null || listed === "") return new Set();
+  const ids = listed.split(",");
+  if (ids.length > MAX_LISTED_CHANNELS)
+    return refuse(400, `channels holds at most ${MAX_LISTED_CHANNELS} ids`);
+  if (!ids.every((id) => SLACK_CHANNEL_ID.test(id)))
+    return refuse(400, "channels must be Slack channel ids");
+  return new Set(ids);
+};
+
+const channelReads = (value: unknown): ChannelRead[] => {
+  const { channels } = record(value);
+  if (!Array.isArray(channels)) return refuse(400, "channels must be a list");
+  if (channels.length > MAX_LISTED_CHANNELS)
+    return refuse(400, `channels holds at most ${MAX_LISTED_CHANNELS} entries`);
+  return channels.map((entry) => {
+    const { channelId, throughTs } = record(entry);
+    if (typeof channelId !== "string" || !SLACK_CHANNEL_ID.test(channelId))
+      return refuse(400, "channelId must be a Slack channel id");
+    if (typeof throughTs !== "string" || !SLACK_TS.test(throughTs))
+      return refuse(400, "throughTs must be a Slack message timestamp");
+    return { channelId, throughTs };
+  });
 };
 
 const readBody = async (incoming: IncomingMessage): Promise<unknown> => {
@@ -119,20 +161,50 @@ const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): 
   };
   const queued = (accepted: boolean) =>
     accepted ? { status: 202 } : refuse(409, "Claude is still working on this card");
+  const stepsQueued = (approval: StepsApproval) => {
+    switch (approval) {
+      case "queued":
+        return queued(true);
+      case "busy":
+        return queued(false);
+      case "gone":
+        return refuse(404, "These steps no longer wait for your approval");
+    }
+  };
   return [
     {
       method: "GET",
       pattern: /^\/api\/state$/,
-      handle: async () => ({
-        status: 200,
-        body: {
-          cards: store.cards(),
-          sync: store.syncState(),
-          lookup: store.lookupState(),
-          news: store.latestNews(),
-          settings: { polish, notify },
-        },
-      }),
+      handle: async (_params, _body, url) => {
+        const openChannels = listedChannels(url);
+        return {
+          status: 200,
+          body: {
+            cards: store.cards(),
+            sync: store.syncState(),
+            lookup: store.lookupState(),
+            news: store.latestNews(),
+            otherMessages: store.otherMessages(openChannels),
+            settings: { polish, notify },
+          },
+        };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/channel-messages\/read$/,
+      handle: async (_params, body) => {
+        store.markChannelsRead(channelReads(await body()));
+        return { status: 204 };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/channel-messages\/read-all$/,
+      handle: async (_params, body) => {
+        store.markAllChannelsRead(channelReads(await body()));
+        return { status: 204 };
+      },
     },
     {
       method: "POST",
@@ -205,6 +277,25 @@ const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): 
     },
     {
       method: "POST",
+      pattern: /^\/api\/cards\/([^/]+)\/turns\/(\d+)\/approve$/,
+      handle: async ([key = "", turn = ""], body) => {
+        const check = checkProposal(record(await body()).proposal, projectKeys);
+        if (!check.ok) return refuse(400, check.reason);
+        cardExists(key);
+        replyTarget(key, check.proposal.replyToTs);
+        return stepsQueued(store.approveSteps(key, Number(turn), check.proposal, new Date()));
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cards\/([^/]+)\/turns\/(\d+)\/discard$/,
+      handle: async ([key = "", turn = ""]) => {
+        store.discardSteps(key, Number(turn));
+        return { status: 204 };
+      },
+    },
+    {
+      method: "POST",
       pattern: /^\/api\/cards\/([^/]+)\/discard$/,
       handle: async ([key = ""]) => {
         store.discardProposal(key);
@@ -234,7 +325,7 @@ const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): 
         const query = url.searchParams.get("q") ?? "";
         if (query.length > MAX_QUERY_CHARS)
           return refuse(400, `q holds at most ${MAX_QUERY_CHARS} characters`);
-        return { status: 200, body: { people: store.searchPeople(query) } };
+        return { status: 200, body: { people: store.searchPeople(query, recipientKind(url)) } };
       },
     },
     {

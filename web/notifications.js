@@ -85,8 +85,8 @@ const changeNotice = (change) => {
     }
     case "failed":
       return change.work === "propose"
-        ? about("claudeDone", `Claude could not draft: ${card.error}`)
-        : about("sendFailed", `Not sent: ${card.error}`);
+        ? about("claudeDone", `Claude could not draft: ${change.error}`)
+        : about("sendFailed", `Not sent: ${change.error}`);
     default:
       return null;
   }

@@ -43,8 +43,51 @@ const withStores = (body: (first: BoardStore, second: BoardStore) => void) => ()
   }
 };
 
+const LOOKBACK_DAYS = 7;
+const DAY_MS = 24 * 60 * 60_000;
+
+const channelHit = (overrides: Partial<SlackHit>): SlackHit =>
+  hit({
+    channelId: "C01",
+    channelLabel: "#backend",
+    kind: "channel",
+    participants: [],
+    author: { id: "U_BOB", name: "Bob" },
+    text: "Deploy is done",
+    ...overrides,
+  });
+
+const ingestChannels = (
+  store: BoardStore,
+  channelHits: SlackHit[],
+  {
+    hits = [],
+    myHits = [],
+    hasMore = false,
+    now = NOW,
+  }: { hits?: SlackHit[]; myHits?: SlackHit[]; hasMore?: boolean; now?: Date } = {},
+) =>
+  store.ingest({
+    hits,
+    myHits,
+    channelHits,
+    hasMoreChannelHits: hasMore,
+    me: ME,
+    projectKeys: PROJECTS,
+    syncedAt: now,
+    lookbackDays: LOOKBACK_DAYS,
+  });
+
 const ingest = (store: BoardStore, hits: SlackHit[], myHits: SlackHit[] = [], now = NOW) =>
-  store.ingest({ hits, myHits, me: ME, projectKeys: PROJECTS, syncedAt: now });
+  ingestChannels(store, [], { hits, myHits, now });
+
+const NO_CHANNEL_OPEN = new Set<string>();
+
+const otherTexts = (store: BoardStore, channelId = "C01"): string[] =>
+  store
+    .otherMessages(new Set([channelId]))
+    .channels.find((channel) => channel.channelId === channelId)
+    ?.messages?.map((message) => message.text) ?? [];
 
 const claimedCardKeys = (store: BoardStore): string[] => {
   const claimed = store.claim("worker", NOW);
@@ -228,6 +271,14 @@ test(
       { channelId: "C01", label: "#backend", kind: "channel" },
     ]);
     assert.equal(store.searchPeople("").length, 4);
+    assert.deepEqual(
+      store.searchPeople("", "channel").map((person) => person.label),
+      ["#backend"],
+    );
+    assert.deepEqual(
+      store.searchPeople("b", "person").map((person) => person.label),
+      ["Anna Berg", "Bob Kral"],
+    );
   }),
 );
 
@@ -288,6 +339,25 @@ test("asks again once about cards an earlier version sent for ranking but got no
   try {
     assert.equal(store.requestRanking(NOW), 1);
     assert.deepEqual(claimedCardKeys(store), ["D01"]);
+  } finally {
+    store.close();
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("upgrades a database from version 4 so Actions can keep its waiting steps", () => {
+  const folder = mkdtempSync(join(tmpdir(), "slack-board-upgrade-v4-"));
+  const path = join(folder, "board.db");
+  const first = new BoardStore(path);
+  ingest(first, [hit({ text: "no ticket" })]);
+  first.close();
+  const old = new DatabaseSync(path);
+  old.exec("ALTER TABLE card_context DROP COLUMN action_proposal; PRAGMA user_version = 4");
+  old.close();
+  const store = new BoardStore(path);
+  try {
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    assert.deepEqual(store.cards()[0]?.actionProposal?.proposal, COMMENT);
   } finally {
     store.close();
     rmSync(folder, { recursive: true, force: true });
@@ -482,14 +552,173 @@ test(
   }),
 );
 
+const COMMENT: Proposal = {
+  summary: "Comment",
+  steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+};
+
+const draftReply = (store: BoardStore, text: string): Proposal => {
+  const draft: Proposal = { summary: "Reply", steps: [{ type: "slack_reply", text }] };
+  store.request("propose", "D01", { text }, NOW);
+  store.finish(store.claim("worker", NOW)?.id ?? 0, { ok: true, proposal: draft }, NOW);
+  return draft;
+};
+
+const answerPrompt = (store: BoardStore, prompt: string, proposal?: Proposal) => {
+  store.act("D01", prompt, NOW);
+  store.finish(
+    store.claim("worker", NOW)?.id ?? 0,
+    {
+      ok: true,
+      reply: "Done looking.",
+      tools: [],
+      ...(proposal === undefined ? {} : { proposal }),
+    },
+    NOW,
+  );
+};
+
 test(
-  "keeps each prompt and Claude's answer as the card's action history, with the steps Claude proposes",
+  "keeps a reply draft and the steps Claude proposes in Actions apart, so neither replaces the other",
   withStores((store) => {
     ingest(store, [hit({ text: "no ticket" })]);
-    const proposal: Proposal = {
-      summary: "Comment",
-      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+    const first = draftReply(store, "First draft.");
+
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    assert.deepEqual(store.cards()[0]?.proposal, first);
+    const second = draftReply(store, "Second draft.");
+
+    const [card] = store.cards();
+    assert.deepEqual(card?.proposal, second);
+    assert.deepEqual(card?.actionProposal, {
+      turn: 1,
+      proposal: COMMENT,
+      approveCloses: false,
+      isRunning: false,
+    });
+  }),
+);
+
+test(
+  "moves the waiting steps under each newer answer that revises them, and keeps them through an answer without steps",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    answerPrompt(store, "Who reported it?");
+    assert.equal(store.cards()[0]?.actionProposal?.turn, 1);
+
+    const revised: Proposal = {
+      summary: "Comment and move",
+      steps: [
+        ...COMMENT.steps,
+        { type: "jira_transition", issueKey: "PROJ-1", transitionId: "31", status: "Review" },
+      ],
     };
+    answerPrompt(store, "Also move it to review", revised);
+
+    const waiting = store.cards()[0]?.actionProposal;
+    assert.deepEqual(
+      { turn: waiting?.turn, proposal: waiting?.proposal },
+      { turn: 5, proposal: revised },
+    );
+  }),
+);
+
+test(
+  "runs the steps approved under an answer only while they still wait there, and shows them running",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    const edited: Proposal = {
+      summary: "Comment",
+      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on staging." }],
+    };
+
+    assert.equal(store.approveSteps("D01", 0, edited, NOW), "gone");
+    assert.equal(store.approveSteps("D01", 1, edited, NOW), "queued");
+    assert.equal(store.approveSteps("D01", 1, edited, NOW), "busy");
+
+    assert.deepEqual(store.cards()[0]?.actionProposal, {
+      turn: 1,
+      proposal: edited,
+      approveCloses: false,
+      isRunning: true,
+    });
+    assert.deepEqual(store.claim("worker", NOW)?.input, { proposal: edited, turn: 1 });
+  }),
+);
+
+test(
+  "after a failed run of steps from Actions shows the error there and keeps only the steps that did not run under the answer",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    const draft = draftReply(store, "On it.");
+    const move: Proposal = {
+      summary: "Move PROJ-1 to review",
+      steps: [
+        { type: "jira_transition", issueKey: "PROJ-1", transitionId: "31", status: "Review" },
+      ],
+    };
+    const both: Proposal = {
+      summary: "Comment and move",
+      steps: [...COMMENT.steps, ...move.steps],
+    };
+    answerPrompt(store, "Comment and move it", both);
+    store.approveSteps("D01", 1, both, NOW);
+    store.finish(
+      store.claim("worker", NOW)?.id ?? 0,
+      {
+        ok: false,
+        error: "Step 2 of 2 failed, steps 1 to 1 are done: transition_not_allowed",
+        remaining: move,
+      },
+      LATER(1000),
+    );
+
+    const [failed] = store.cards();
+    assert.equal(failed?.error, null);
+    assert.deepEqual(failed?.proposal, draft);
+    assert.deepEqual(
+      { turn: failed?.actionProposal?.turn, proposal: failed?.actionProposal?.proposal },
+      { turn: 1, proposal: move },
+    );
+    assert.deepEqual(failed?.actions.at(-1), {
+      author: "claude",
+      text: "Step 2 of 2 failed, steps 1 to 1 are done: transition_not_allowed",
+      at: LATER(1000).toISOString(),
+      tools: [],
+      isFailed: true,
+    });
+
+    assert.equal(store.approveSteps("D01", 1, move, NOW), "queued");
+    store.finish(store.claim("worker", NOW)?.id ?? 0, { ok: true }, NOW);
+
+    const [done] = store.cards();
+    assert.equal(done?.actionProposal, null);
+    assert.deepEqual(done?.proposal, draft);
+    assert.equal(done?.actions.at(-1)?.text, "Done: Move PROJ-1 to review");
+  }),
+);
+
+test(
+  "discards the waiting steps only under the answer they wait under, so a stale page cannot drop a newer version",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    answerPrompt(store, "Comment in English", COMMENT);
+
+    store.discardSteps("D01", 1);
+    assert.equal(store.cards()[0]?.actionProposal?.turn, 3);
+    store.discardSteps("D01", 3);
+    assert.equal(store.cards()[0]?.actionProposal, null);
+  }),
+);
+
+test(
+  "keeps each prompt and Claude's answer as the card's action history",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    const proposal = COMMENT;
 
     assert.equal(store.act("D01", "Find the related ticket", NOW), true);
     assert.deepEqual(store.cards()[0]?.pending, { kind: "act", status: "pending" });
@@ -524,8 +753,6 @@ test(
         isFailed: false,
       },
     ]);
-    assert.deepEqual(card?.proposal, proposal);
-    assert.equal(card?.approveCloses, false);
     assert.equal(card?.pending, null);
   }),
 );
@@ -690,5 +917,147 @@ test(
     ingest(store, [hit({ text: "no ticket" })]);
 
     assert.deepEqual(store.cards(), []);
+  }),
+);
+
+test(
+  "keeps messages from my channels across syncs, summed up per channel, with the messages of opened channels only",
+  withStores((store) => {
+    ingestChannels(store, [
+      channelHit({ ts: "1795000000.000100", text: "first" }),
+      channelHit({ ts: "1795000500.000000", text: "second" }),
+      channelHit({ channelId: "C02", channelLabel: "#ops", ts: "1795000600.000000", text: "ops" }),
+    ]);
+    ingestChannels(store, [], { now: LATER(60_000) });
+
+    const message = (ts: string, text: string) => ({
+      key: `C01:${ts}`,
+      channelId: "C01",
+      channelLabel: "#backend",
+      ts,
+      authorName: "Bob",
+      text,
+      permalink: "https://example.slack.com/archives/D01/p1795000000000100",
+    });
+    assert.deepEqual(store.otherMessages(new Set(["C01"])), {
+      total: 3,
+      isMissing: false,
+      channels: [
+        {
+          channelId: "C02",
+          label: "#ops",
+          count: 1,
+          latestTs: "1795000600.000000",
+          messages: null,
+        },
+        {
+          channelId: "C01",
+          label: "#backend",
+          count: 2,
+          latestTs: "1795000500.000000",
+          messages: [message("1795000000.000100", "first"), message("1795000500.000000", "second")],
+        },
+      ],
+    });
+
+    const firstOutOfLookback = new Date(1795000001 * 1000 + LOOKBACK_DAYS * DAY_MS);
+    ingestChannels(store, [], { now: firstOutOfLookback });
+    assert.deepEqual(otherTexts(store), ["second"]);
+  }),
+);
+
+test(
+  "marks a channel read up to the newest message shown, so later ones stay and the next sync brings no read one back",
+  withStores((store) => {
+    const shown = [
+      channelHit({ ts: "1795000100.000000", text: "first" }),
+      channelHit({ ts: "1795000200.000000", text: "second" }),
+    ];
+    const later = channelHit({ ts: "1795000300.000000", text: "came while reading" });
+    const ops = channelHit({ channelId: "C02", channelLabel: "#ops", ts: "1795000150.000000" });
+    ingestChannels(store, [...shown, ops]);
+    ingestChannels(store, [...shown, later, ops], { now: LATER(60_000) });
+
+    store.markChannelsRead([{ channelId: "C01", throughTs: "1795000200.000000" }]);
+    store.markChannelsRead([{ channelId: "C01", throughTs: "1795000100.000000" }]);
+    ingestChannels(store, [...shown, later, ops], { now: LATER(120_000) });
+
+    assert.deepEqual(otherTexts(store), ["came while reading"]);
+    assert.equal(store.otherMessages(NO_CHANNEL_OPEN).total, 2);
+  }),
+);
+
+test(
+  "never shows a channel message that is on a card, was ignored there, or that I answered in its thread",
+  withStores((store) => {
+    const mention = channelHit({ ts: "1795000100.000000", text: `<@${ME}> look` });
+    const answered = channelHit({ ts: "1795000200.000000", text: "answered" });
+    const plain = channelHit({ ts: "1795000300.000000", text: "plain" });
+    const myReply = channelHit({
+      ts: "1795000250.000000",
+      threadTs: "1795000200.000000",
+      author: { id: ME, name: "Me" },
+    });
+    const channelHits = [mention, answered, plain];
+    ingestChannels(store, channelHits, { hits: [mention], myHits: [myReply] });
+    assert.deepEqual(otherTexts(store), ["plain"]);
+
+    store.ignore("C01:1795000100.000000", NOW);
+    ingestChannels(store, channelHits, { hits: [mention], myHits: [myReply], now: LATER(60_000) });
+    assert.deepEqual(otherTexts(store), ["plain"]);
+
+    const askedInThread = channelHit({
+      ts: "1795000350.000000",
+      threadTs: "1795000300.000000",
+      text: `<@${ME}> and you?`,
+    });
+    ingestChannels(store, [], { hits: [askedInThread], now: LATER(120_000) });
+    assert.deepEqual(otherTexts(store), []);
+  }),
+);
+
+test(
+  "turns a person's @here into a card and leaves a bot's @channel among the other messages",
+  withStores((store) => {
+    ingestChannels(store, [
+      channelHit({ ts: "1795000100.000000", text: "<!here> standup moved" }),
+      channelHit({
+        ts: "1795000200.000000",
+        author: { id: "U_BOT", name: "Alarms" },
+        isBot: true,
+        text: "<!channel> disk full",
+      }),
+      channelHit({ ts: "1795000300.000000", text: "lunch?" }),
+    ]);
+
+    assert.deepEqual(
+      store.cards().map((card) => [card.key, card.messages.map((message) => message.text)]),
+      [["C01:1795000100.000000", ["<!here> standup moved"]]],
+    );
+    assert.deepEqual(otherTexts(store), ["<!channel> disk full", "lunch?"]);
+  }),
+);
+
+test(
+  "says messages are missing after a sync found more than it loads, until all are marked read or the lookback passes",
+  withStores((store) => {
+    const backend = channelHit({ ts: "1795000100.000000" });
+    const ops = channelHit({ channelId: "C02", channelLabel: "#ops", ts: "1795000200.000000" });
+    ingestChannels(store, [backend, ops], { hasMore: true });
+    ingestChannels(store, [], { now: LATER(60_000) });
+    store.markChannelsRead([{ channelId: "C01", throughTs: backend.ts }]);
+    assert.equal(store.otherMessages(NO_CHANNEL_OPEN).isMissing, true);
+
+    store.markAllChannelsRead([{ channelId: "C02", throughTs: ops.ts }]);
+    assert.deepEqual(store.otherMessages(NO_CHANNEL_OPEN), {
+      total: 0,
+      isMissing: false,
+      channels: [],
+    });
+
+    ingestChannels(store, [], { hasMore: true, now: LATER(120_000) });
+    const truncatedSyncOutOfLookback = new Date(LATER(121_000).getTime() + LOOKBACK_DAYS * DAY_MS);
+    ingestChannels(store, [], { now: truncatedSyncOutOfLookback });
+    assert.equal(store.otherMessages(NO_CHANNEL_OPEN).isMissing, false);
   }),
 );

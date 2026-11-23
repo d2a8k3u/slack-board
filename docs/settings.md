@@ -11,7 +11,7 @@ Change these in Claude Code's config menu under slack-board. A changed setting a
 | `style_prompt` | empty | How Claude should write your replies and Jira comments, for example "Short and warm, first names, no jargon". When set, it is used instead of the tone of voice file. |
 | `tone_of_voice_file` | `~/.claude/skills/tone-of-voice/SKILL.md` | Markdown file with your writing style, used while `style_prompt` is empty. When the file does not exist, a built-in plain and friendly style is used. |
 | `sync_minutes` | `5` | Minutes between Slack checks. At least 1. |
-| `lookback_days` | `7` | How many days back the first check looks for messages. At least 1. |
+| `lookback_days` | `7` | How many days back the first check looks for messages, and how many days a message stays in Other messages. At least 1. |
 | `notify_new_messages` | on | A notification when someone writes to you: who, where and the start of the message. |
 | `notify_claude_done` | on | A notification when Claude's draft is ready to approve or Claude answered a prompt in Actions. |
 | `notify_send_failed` | on | A notification when a reply, reaction or approved step did not go out. |

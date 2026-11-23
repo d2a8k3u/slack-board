@@ -29,7 +29,7 @@ Slack messages, tickets and tool results are passed to Claude as data; Claude is
 
 ## What is stored
 
-The database lives in the plugin's data folder under `~/.claude/plugins/data/`. It holds the open cards with their messages, the last 30 messages of each opened conversation, your prompts and Claude's answers, ticket details and summaries, the people and channels you can write to (names and IDs only), the IDs of handled conversations for 30 days so they do not come back, and the requests waiting for Claude. A card, its conversation and its prompts are deleted once you handle it. Email addresses and profile details are never stored.
+The database lives in the plugin's data folder under `~/.claude/plugins/data/`. It holds the open cards with their messages, the last 30 messages of each opened conversation, the messages in Other messages for up to `lookback_days` and, per channel, the latest message you marked read, your prompts and Claude's answers, ticket details and summaries, the people and channels you can write to (names and IDs only), the IDs of handled conversations for 30 days so they do not come back, and the requests waiting for Claude. A card, its conversation and its prompts are deleted once you handle it. Email addresses and profile details are never stored.
 
 ## Security
 
@@ -41,3 +41,7 @@ The board page listens on 127.0.0.1 only. Every API request needs a random secre
 - While Claude works on a prompt, the card takes no reply, reaction or other prompt until the answer is in.
 - Avatars show initials: the Slack connector does not return profile photos.
 - A thread you once wrote in keeps bringing its new replies to the board; Ignore a busy thread to quiet it until the next message.
+- A sync loads at most 100 channel messages, thread replies included. When a sync finds more, Other messages says some are missing, and an `@here`, `@channel` or `@everyone` among the missing ones gets no card.
+- A mention of a user group you belong to, such as `@backend`, brings no card: the Slack connector does not say which groups you are in.
+- A user group in a message shows as `@group`, and the `@` list in a reply offers no user groups: the Slack connector gives the board a group's ID but not its name.
+- The board cannot tell what you already read in Slack or which channels you muted, so Other messages shows them all until you mark them read on the board.

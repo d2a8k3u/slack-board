@@ -1,15 +1,27 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { channelMessagesAfterSync, unreadChannelMessages } from "../core/channel-messages.ts";
 import { conversationView } from "../core/conversation.ts";
-import { dropAnswered, mergeHits, newMessages, peopleFromHits } from "../core/inbox.ts";
+import {
+  conversationKey,
+  dropAnswered,
+  isNewer,
+  mentionsEveryone,
+  mergeHits,
+  newMessages,
+  peopleFromHits,
+} from "../core/inbox.ts";
 import { answersConversation } from "../core/steps.ts";
 import { ticketKeys } from "../core/tickets.ts";
 import type {
+  ActionProposal,
   ActionTurn,
   BoardCard,
   CardKind,
   CardMessage,
   CardPriority,
+  ChannelMessage,
+  ChannelRead,
   ClaimedRequest,
   ConversationKind,
   FinishOutcome,
@@ -18,6 +30,7 @@ import type {
   LookupState,
   NewMessage,
   NewsBatch,
+  OtherMessages,
   Priority,
   Proposal,
   RankingCard,
@@ -26,9 +39,11 @@ import type {
   RequestKind,
   RequestStatus,
   SlackHit,
+  StepsApproval,
   SyncState,
   TicketDetails,
   TicketState,
+  WaitingSteps,
 } from "../core/types.ts";
 
 export const STALE_CLAIM_MS = 120_000;
@@ -38,6 +53,7 @@ const IGNORED_KEEP_MS = 30 * 24 * 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 const BUSY_TIMEOUT_MS = 5000;
 const COMPOSE_PREFIX = "compose:";
+const MISSING_CHANNEL_MESSAGES = "channel_messages_missing_at";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS cards (
@@ -73,8 +89,20 @@ CREATE TABLE IF NOT EXISTS card_context (
   actions TEXT NOT NULL DEFAULT '[]',
   history TEXT,
   history_ts TEXT,
-  history_error TEXT
+  history_error TEXT,
+  action_proposal TEXT
 );
+CREATE TABLE IF NOT EXISTS channel_messages (
+  key TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL,
+  channel_label TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  permalink TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS channel_messages_by_channel ON channel_messages (channel_id, ts);
+CREATE TABLE IF NOT EXISTS channel_reads (channel_id TEXT PRIMARY KEY, read_ts TEXT NOT NULL);
 `;
 
 const TICKETS_TABLE = `
@@ -90,12 +118,13 @@ CREATE TABLE tickets (
 );
 `;
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const MAX_PEOPLE_RESULTS = 20;
 const MAX_RANKING_BATCH = 20;
 const RANKING_MESSAGES = 5;
 const RANKING_TEXT_CHARS = 600;
 const PRIORITY_COLUMNS = ["priority", "priority_reason", "priority_ts"];
+const CONTEXT_COLUMNS = ["action_proposal"];
 const BACKGROUND_KINDS = ["details", "classify"];
 
 type CardRow = {
@@ -119,6 +148,7 @@ type ContextRow = {
   history: string | null;
   history_ts: string | null;
   history_error: string | null;
+  action_proposal: string | null;
 };
 
 type HistoryInput = { key: string; channelId: string; threadTs: string | null; latestTs: string };
@@ -142,6 +172,33 @@ type TicketRow = {
 };
 
 type PersonRow = { channel_id: string; label: string; kind: Recipient["kind"] };
+
+type ChannelMessageRow = {
+  key: string;
+  channel_id: string;
+  channel_label: string;
+  ts: string;
+  author_name: string;
+  text: string;
+  permalink: string;
+};
+
+type ChannelSummaryRow = {
+  channel_id: string;
+  channel_label: string;
+  count: number;
+  latest_ts: string;
+};
+
+const channelMessageOf = (row: ChannelMessageRow): ChannelMessage => ({
+  key: row.key,
+  channelId: row.channel_id,
+  channelLabel: row.channel_label,
+  ts: row.ts,
+  authorName: row.author_name,
+  text: row.text,
+  permalink: row.permalink,
+});
 
 const ticketOf = (row: TicketRow): TicketState => ({
   key: row.key,
@@ -178,6 +235,10 @@ const rankingCardOf = (row: CardRow): RankingCard | null => {
 
 const tsToIso = (ts: string): string => new Date(Number(ts) * 1000).toISOString();
 
+const SLACK_TS_FRACTION_DIGITS = 6;
+
+const tsOfDate = (date: Date): string => (date.getTime() / 1000).toFixed(SLACK_TS_FRACTION_DIGITS);
+
 const likePattern = (query: string): string =>
   `%${query.replace(/[\\%_]/g, (character) => `\\${character}`)}%`;
 
@@ -186,17 +247,53 @@ type Lease = { holder: string; until: string };
 export type SyncInput = {
   hits: SlackHit[];
   myHits: SlackHit[];
+  channelHits: SlackHit[];
+  hasMoreChannelHits: boolean;
   me: string;
   projectKeys: string[];
   syncedAt: Date;
+  lookbackDays: number;
 };
 
 const iso = (date: Date): string => date.toISOString();
 
-const runProposalOf = (request: RequestRow): Proposal =>
-  (JSON.parse(request.input) as { proposal: Proposal }).proposal;
+type Run = { proposal: Proposal; turn?: number };
+
+const runOf = (request: RequestRow): Run => JSON.parse(request.input) as Run;
+
+const claudeTurn = (
+  text: string,
+  now: Date,
+  isFailed: boolean,
+  tools: string[] = [],
+): ActionTurn => ({
+  author: "claude",
+  text,
+  at: iso(now),
+  tools,
+  isFailed,
+});
+
+const doneTurn = (proposal: Proposal, now: Date): ActionTurn =>
+  claudeTurn(`Done: ${proposal.summary}`, now, false);
 
 const lastTs = (messages: CardMessage[]): string | null => messages.at(-1)?.ts ?? null;
+
+const waitingStepsOf = (json: string | null): WaitingSteps | null =>
+  json === null ? null : (JSON.parse(json) as WaitingSteps);
+
+const actionProposalOf = (
+  json: string | null,
+  runningTurn: number | null,
+): ActionProposal | null => {
+  const waiting = waitingStepsOf(json);
+  if (waiting === null) return null;
+  return {
+    ...waiting,
+    approveCloses: answersConversation(waiting.proposal.steps),
+    isRunning: waiting.turn === runningTurn,
+  };
+};
 
 type InboxRow = CardRow & { kind: ConversationKind };
 
@@ -236,7 +333,8 @@ export class BoardStore {
     if (version >= SCHEMA_VERSION) return;
     this.#transaction(() => {
       if (version < 2) this.#rebuildTickets();
-      this.#addPriorityColumns();
+      this.#addMissingColumns("cards", PRIORITY_COLUMNS);
+      this.#addMissingColumns("card_context", CONTEXT_COLUMNS);
       if (version < 4) this.#db.exec("UPDATE cards SET priority_ts = NULL WHERE priority IS NULL");
       this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     });
@@ -253,14 +351,14 @@ export class BoardStore {
     }
   }
 
-  #addPriorityColumns(): void {
+  #addMissingColumns(table: string, columns: string[]): void {
     const existing = new Set(
-      (this.#db.prepare("PRAGMA table_info(cards)").all() as { name: string }[]).map(
+      (this.#db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
         (column) => column.name,
       ),
     );
-    for (const column of PRIORITY_COLUMNS)
-      if (!existing.has(column)) this.#db.exec(`ALTER TABLE cards ADD COLUMN ${column} TEXT`);
+    for (const column of columns)
+      if (!existing.has(column)) this.#db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
   }
 
   close(): void {
@@ -329,15 +427,24 @@ export class BoardStore {
           }[]
         ).map((row) => [row.key, row.last_ts]),
       );
-      const merged = dropAnswered(mergeHits(known, sync.hits, sync.me, ignored), sync.myHits);
+      const inboxHits = [
+        ...sync.hits,
+        ...sync.channelHits.filter((hit) => mentionsEveryone(hit.text)),
+      ];
+      const merged = dropAnswered(mergeHits(known, inboxHits, sync.me, ignored), sync.myHits);
       for (const card of merged) this.#saveInboxCard(card, before.get(card.key), sync);
+      this.#syncChannelMessages(sync, [
+        ...merged.map((card) => card.key),
+        ...ignored.keys(),
+        ...sync.myHits.map(conversationKey),
+      ]);
       const kept = new Set(merged.map((card) => card.key));
       for (const key of before.keys()) if (!kept.has(key)) this.#deleteCard(key);
       this.#forgetUnusedTickets();
       this.#rememberPeople(peopleFromHits(sync.hits, sync.me), sync.syncedAt);
       this.#setMeta("last_sync_at", iso(sync.syncedAt));
       this.#setMeta("me", sync.me);
-      this.#db.prepare(`DELETE FROM meta WHERE key = 'last_sync_error'`).run();
+      this.#deleteMeta("last_sync_error");
       const news = isFirstSync ? [] : newMessages(known, merged);
       if (news.length > 0) this.#setMeta("news", { at: iso(sync.syncedAt), items: news });
       return news;
@@ -347,7 +454,8 @@ export class BoardStore {
   cards(): BoardCard[] {
     const rows = this.#db
       .prepare(
-        `SELECT cards.*, card_context.actions, card_context.history, card_context.history_error
+        `SELECT cards.*, card_context.actions, card_context.history, card_context.history_error,
+         card_context.action_proposal
          FROM cards LEFT JOIN card_context ON card_context.key = cards.key ORDER BY updated_at DESC`,
       )
       .all() as (CardRow & Omit<ContextRow, "history_ts">)[];
@@ -361,12 +469,23 @@ export class BoardStore {
           .all() as TicketRow[]
       ).map((row) => [row.key, ticketOf(row)]),
     );
+    const openRows = this.#db
+      .prepare(
+        "SELECT card_key, kind, status, json_extract(input, '$.turn') AS turn FROM requests WHERE card_key IS NOT NULL",
+      )
+      .all() as {
+      card_key: string;
+      kind: RequestKind;
+      status: RequestStatus;
+      turn: number | null;
+    }[];
     const open = new Map(
-      (
-        this.#db
-          .prepare("SELECT card_key, kind, status FROM requests WHERE card_key IS NOT NULL")
-          .all() as { card_key: string; kind: RequestKind; status: RequestStatus }[]
-      ).map((row) => [row.card_key, { kind: row.kind, status: row.status }]),
+      openRows.map((row) => [row.card_key, { kind: row.kind, status: row.status }]),
+    );
+    const runningTurns = new Map(
+      openRows.flatMap((row) =>
+        row.kind === "execute" && row.turn !== null ? [[row.card_key, row.turn]] : [],
+      ),
     );
     return rows.map((row) => {
       const proposal = row.proposal === null ? null : (JSON.parse(row.proposal) as Proposal);
@@ -388,12 +507,49 @@ export class BoardStore {
           .filter((ticket) => ticket !== undefined),
         proposal,
         approveCloses: proposal !== null && answersConversation(proposal.steps),
+        actionProposal: actionProposalOf(row.action_proposal, runningTurns.get(row.key) ?? null),
         pending: open.get(row.key) ?? null,
         error: row.error,
         updatedAt: row.updated_at,
         priority: row.priority,
         priorityReason: row.priority_reason,
       };
+    });
+  }
+
+  otherMessages(openChannels: ReadonlySet<string>): OtherMessages {
+    const summaries = this.#db
+      .prepare(
+        `SELECT channel_id, channel_label, COUNT(*) AS count, MAX(ts) AS latest_ts
+         FROM channel_messages GROUP BY channel_id ORDER BY latest_ts DESC`,
+      )
+      .all() as ChannelSummaryRow[];
+    const messagesIn = this.#db.prepare(
+      "SELECT * FROM channel_messages WHERE channel_id = ? ORDER BY ts",
+    );
+    return {
+      total: summaries.reduce((sum, summary) => sum + summary.count, 0),
+      isMissing: this.#meta<string>(MISSING_CHANNEL_MESSAGES) !== null,
+      channels: summaries.map((summary) => ({
+        channelId: summary.channel_id,
+        label: summary.channel_label,
+        count: summary.count,
+        latestTs: summary.latest_ts,
+        messages: openChannels.has(summary.channel_id)
+          ? (messagesIn.all(summary.channel_id) as ChannelMessageRow[]).map(channelMessageOf)
+          : null,
+      })),
+    };
+  }
+
+  markChannelsRead(marks: ChannelRead[]): void {
+    this.#transaction(() => this.#markRead(marks));
+  }
+
+  markAllChannelsRead(marks: ChannelRead[]): void {
+    this.#transaction(() => {
+      this.#markRead(marks);
+      this.#deleteMeta(MISSING_CHANNEL_MESSAGES);
     });
   }
 
@@ -460,6 +616,21 @@ export class BoardStore {
     return this.#queueRun(key, proposal, null, now);
   }
 
+  discardSteps(key: string, turn: number): void {
+    this.#transaction(() => {
+      if (this.#waitingSteps(key)?.turn === turn) this.#saveWaitingSteps(key, null);
+    });
+  }
+
+  approveSteps(key: string, turn: number, proposal: Proposal, now: Date): StepsApproval {
+    return this.#transaction(() => {
+      if (this.#waitingSteps(key)?.turn !== turn) return "gone";
+      if (!this.#enqueue("execute", key, { proposal, turn }, now)) return "busy";
+      this.#saveWaitingSteps(key, { turn, proposal });
+      return "queued";
+    });
+  }
+
   #queueRun(key: string, proposal: Proposal, shownProposal: Proposal | null, now: Date): boolean {
     return this.#transaction(() => {
       if (!this.#enqueue("execute", key, { proposal }, now)) return false;
@@ -520,12 +691,12 @@ export class BoardStore {
     });
   }
 
-  searchPeople(query: string): Recipient[] {
+  searchPeople(query: string, kind: Recipient["kind"] | null = null): Recipient[] {
     const rows = this.#db
       .prepare(
-        `SELECT channel_id, label, kind FROM people WHERE label LIKE ? ESCAPE '\\' ORDER BY kind = 'channel', seen_at DESC, label LIMIT ?`,
+        `SELECT channel_id, label, kind FROM people WHERE label LIKE ? ESCAPE '\\' AND (? IS NULL OR kind = ?) ORDER BY kind = 'channel', seen_at DESC, label LIMIT ?`,
       )
-      .all(likePattern(query.trim()), MAX_PEOPLE_RESULTS) as PersonRow[];
+      .all(likePattern(query.trim()), kind, kind, MAX_PEOPLE_RESULTS) as PersonRow[];
     return rows.map(recipientOf);
   }
 
@@ -593,15 +764,7 @@ export class BoardStore {
         this.#applyHistory(JSON.parse(request.input) as HistoryInput, outcome);
         return;
       case "execute":
-        if (outcome.ok) this.#applyRun(request, now);
-        else
-          this.#db
-            .prepare("UPDATE cards SET error = ?, proposal = ? WHERE key = ?")
-            .run(
-              outcome.error,
-              JSON.stringify(outcome.remaining ?? runProposalOf(request)),
-              request.card_key,
-            );
+        this.#applyRun(request.card_key ?? "", runOf(request), outcome, now);
         return;
       case "details":
         this.#db
@@ -651,26 +814,21 @@ export class BoardStore {
   }
 
   #applyAnswer(key: string, outcome: FinishOutcome, now: Date): void {
-    const claude = (text: string, isFailed: boolean, tools: string[] = []): ActionTurn => ({
-      author: "claude",
-      text,
-      at: iso(now),
-      tools,
-      isFailed,
-    });
     if (!outcome.ok) {
-      this.#appendTurn(key, claude(outcome.error, true));
+      this.#appendTurn(key, claudeTurn(outcome.error, now, true));
       return;
     }
-    this.#appendTurn(key, claude(outcome.reply ?? "", false, outcome.tools));
+    const turn = this.#appendTurn(key, claudeTurn(outcome.reply ?? "", now, false, outcome.tools));
     if (outcome.proposal !== undefined)
-      this.#db
-        .prepare("UPDATE cards SET proposal = ?, error = NULL WHERE key = ?")
-        .run(JSON.stringify(outcome.proposal), key);
+      this.#saveWaitingSteps(key, { turn, proposal: outcome.proposal });
     if (outcome.proposalError !== undefined)
       this.#appendTurn(
         key,
-        claude(`The board refused the steps Claude proposed: ${outcome.proposalError}`, true),
+        claudeTurn(
+          `The board refused the steps Claude proposed: ${outcome.proposalError}`,
+          now,
+          true,
+        ),
       );
   }
 
@@ -684,29 +842,54 @@ export class BoardStore {
     else this.#saveContext(input.key, { history_error: outcome.error });
   }
 
-  #applyRun(request: RequestRow, now: Date): void {
-    const key = request.card_key ?? "";
-    const proposal = runProposalOf(request);
-    if (answersConversation(proposal.steps)) {
+  #applyRun(key: string, run: Run, outcome: FinishOutcome, now: Date): void {
+    if (outcome.ok && answersConversation(run.proposal.steps)) {
       this.#closeCard(key, now);
       return;
     }
-    this.#db.prepare("UPDATE cards SET proposal = NULL, error = NULL WHERE key = ?").run(key);
-    this.#appendTurn(key, {
-      author: "claude",
-      text: `Done: ${proposal.summary}`,
-      at: iso(now),
-      tools: [],
-      isFailed: false,
-    });
+    if (run.turn === undefined) this.#finishReplyRun(key, run.proposal, outcome, now);
+    else this.#finishStepsRun(key, { turn: run.turn, proposal: run.proposal }, outcome, now);
   }
 
-  #appendTurn(key: string, turn: ActionTurn): void {
+  #finishReplyRun(key: string, proposal: Proposal, outcome: FinishOutcome, now: Date): void {
+    if (!outcome.ok) {
+      this.#db
+        .prepare("UPDATE cards SET error = ?, proposal = ? WHERE key = ?")
+        .run(outcome.error, JSON.stringify(outcome.remaining ?? proposal), key);
+      return;
+    }
+    this.#db.prepare("UPDATE cards SET proposal = NULL, error = NULL WHERE key = ?").run(key);
+    this.#appendTurn(key, doneTurn(proposal, now));
+  }
+
+  #finishStepsRun(key: string, run: WaitingSteps, outcome: FinishOutcome, now: Date): void {
+    if (!outcome.ok) {
+      this.#saveWaitingSteps(key, { turn: run.turn, proposal: outcome.remaining ?? run.proposal });
+      this.#appendTurn(key, claudeTurn(outcome.error, now, true));
+      return;
+    }
+    this.#saveWaitingSteps(key, null);
+    this.#appendTurn(key, doneTurn(run.proposal, now));
+  }
+
+  #appendTurn(key: string, turn: ActionTurn): number {
     const row = this.#db.prepare("SELECT actions FROM card_context WHERE key = ?").get(key) as
       | { actions: string }
       | undefined;
     const actions = row === undefined ? [] : (JSON.parse(row.actions) as ActionTurn[]);
     this.#saveContext(key, { actions: JSON.stringify([...actions, turn]) });
+    return actions.length;
+  }
+
+  #waitingSteps(key: string): WaitingSteps | null {
+    const row = this.#db
+      .prepare("SELECT action_proposal FROM card_context WHERE key = ?")
+      .get(key) as Pick<ContextRow, "action_proposal"> | undefined;
+    return waitingStepsOf(row?.action_proposal ?? null);
+  }
+
+  #saveWaitingSteps(key: string, waiting: WaitingSteps | null): void {
+    this.#saveContext(key, { action_proposal: waiting === null ? null : JSON.stringify(waiting) });
   }
 
   #saveContext(key: string, fields: Partial<Record<keyof ContextRow, string | null>>): void {
@@ -760,6 +943,78 @@ export class BoardStore {
         tsToIso(card.messages.at(-1)?.ts ?? "0"),
       );
     for (const key of keys) this.#trackTicket(key, sync.syncedAt);
+  }
+
+  #markRead(marks: ChannelRead[]): void {
+    const reads = this.#channelReads();
+    const upsert = this.#db.prepare(
+      "INSERT INTO channel_reads (channel_id, read_ts) VALUES (?, ?) ON CONFLICT(channel_id) DO UPDATE SET read_ts = excluded.read_ts",
+    );
+    for (const mark of marks)
+      if (isNewer(mark.throughTs, reads.get(mark.channelId)))
+        upsert.run(mark.channelId, mark.throughTs);
+    this.#replaceChannelMessages(
+      unreadChannelMessages(this.#storedChannelMessages(), this.#channelReads()),
+    );
+  }
+
+  #syncChannelMessages(sync: SyncInput, coveredKeys: string[]): void {
+    const keepFrom = new Date(sync.syncedAt.getTime() - sync.lookbackDays * DAY_MS);
+    this.#replaceChannelMessages(
+      channelMessagesAfterSync({
+        stored: this.#storedChannelMessages(),
+        hits: sync.channelHits,
+        me: sync.me,
+        covered: new Set(coveredKeys),
+        readThrough: this.#channelReads(),
+        keepFromTs: tsOfDate(keepFrom),
+      }),
+    );
+    this.#noteMissingChannelMessages(sync, keepFrom);
+  }
+
+  #noteMissingChannelMessages(sync: SyncInput, keepFrom: Date): void {
+    if (sync.hasMoreChannelHits) {
+      this.#setMeta(MISSING_CHANNEL_MESSAGES, iso(sync.syncedAt));
+      return;
+    }
+    const missingAt = this.#meta<string>(MISSING_CHANNEL_MESSAGES);
+    if (missingAt !== null && new Date(missingAt) < keepFrom)
+      this.#deleteMeta(MISSING_CHANNEL_MESSAGES);
+  }
+
+  #channelReads(): Map<string, string> {
+    return new Map(
+      (
+        this.#db.prepare("SELECT channel_id, read_ts FROM channel_reads").all() as {
+          channel_id: string;
+          read_ts: string;
+        }[]
+      ).map((row) => [row.channel_id, row.read_ts]),
+    );
+  }
+
+  #storedChannelMessages(): ChannelMessage[] {
+    return (this.#db.prepare("SELECT * FROM channel_messages").all() as ChannelMessageRow[]).map(
+      channelMessageOf,
+    );
+  }
+
+  #replaceChannelMessages(messages: ChannelMessage[]): void {
+    this.#db.prepare("DELETE FROM channel_messages").run();
+    const insert = this.#db.prepare(
+      "INSERT INTO channel_messages (key, channel_id, channel_label, ts, author_name, text, permalink) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    for (const message of messages)
+      insert.run(
+        message.key,
+        message.channelId,
+        message.channelLabel,
+        message.ts,
+        message.authorName,
+        message.text,
+        message.permalink,
+      );
   }
 
   #trackTicket(issueKey: string, now: Date): void {
@@ -826,6 +1081,10 @@ export class BoardStore {
       | { value: string }
       | undefined;
     return row === undefined ? null : (JSON.parse(row.value) as T);
+  }
+
+  #deleteMeta(key: string): void {
+    this.#db.prepare("DELETE FROM meta WHERE key = ?").run(key);
   }
 
   #setMeta(key: string, value: unknown): void {

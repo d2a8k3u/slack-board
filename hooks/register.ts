@@ -20,7 +20,7 @@ import {
   type TicketContext,
   ticketSummaryPrompt,
 } from "../core/prompts.ts";
-import { parseProposal } from "../core/proposal.ts";
+import { keepsMentions, MENTIONS_CHANGED, parseProposal } from "../core/proposal.ts";
 import { nextSyncAt } from "../core/schedule.ts";
 import { readHistory } from "../core/slack-history.ts";
 import { readRecipients, readSearchPage } from "../core/slack-search.ts";
@@ -169,12 +169,14 @@ const complete = async (
   return answer.text;
 };
 
+type SearchResult = { hits: SlackHit[]; hasMore: boolean };
+
 const searchAll = async (
   $: EngineInterface,
   servers: Servers,
   query: Record<string, unknown>,
   after: number,
-): Promise<SlackHit[]> => {
+): Promise<SearchResult> => {
   const hits: SlackHit[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -191,9 +193,9 @@ const searchAll = async (
     const result = readSearchPage(await callText($, servers.slack, SEARCH_TOOL, args));
     hits.push(...result.hits);
     cursor = result.cursor;
-    if (cursor === null || result.hits.length === 0) break;
+    if (cursor === null || result.hits.length === 0) return { hits, hasMore: false };
   }
-  return hits;
+  return { hits, hasMore: true };
 };
 
 const forMeQueries = (me: string): Record<string, unknown>[] => [
@@ -201,6 +203,13 @@ const forMeQueries = (me: string): Record<string, unknown>[] => [
   { keywords: [`<@${me}>`], channel_types: "public_channel,private_channel,mpim" },
   { filters: `with:<@${me}> is:thread` },
 ];
+
+const othersInMyChannelsQuery = (me: string): Record<string, unknown> => ({
+  filters: `-from:<@${me}>`,
+  channel_types: "public_channel,private_channel",
+  only_my_channels: true,
+  include_bots: true,
+});
 
 const sync = async (
   $: EngineInterface,
@@ -219,11 +228,15 @@ const sync = async (
   try {
     const hits: SlackHit[] = [];
     for (const query of forMeQueries(servers.me))
-      hits.push(...(await searchAll($, servers, query, window.after)));
-    const myHits = await searchAll($, servers, { filters: `from:<@${servers.me}>` }, window.after);
+      hits.push(...(await searchAll($, servers, query, window.after)).hits);
+    const mine = await searchAll($, servers, { filters: `from:<@${servers.me}>` }, window.after);
+    const channels = await searchAll($, servers, othersInMyChannelsQuery(servers.me), window.after);
     await callBoard($, servers, "ingest", {
       hits,
-      myHits,
+      myHits: mine.hits,
+      channelHits: channels.hits,
+      hasMoreChannelHits: channels.hasMore,
+      lookbackDays: settings.lookbackDays,
       me: servers.me,
       syncedAt: window.startedAt,
     });
@@ -289,9 +302,9 @@ const propose = async (
     note: text,
   });
   const check = parseProposal(await complete($, DRAFT_MODEL, prompt), settings.projectKeys);
-  return check.ok
-    ? { ok: true, proposal: { ...check.proposal, replyToTs } }
-    : { ok: false, error: check.reason };
+  if (!check.ok) return { ok: false, error: check.reason };
+  if (!keepsMentions(text, check.proposal)) return { ok: false, error: MENTIONS_CHANGED };
+  return { ok: true, proposal: { ...check.proposal, replyToTs } };
 };
 
 const connectorTools = async ($: EngineInterface): Promise<string[]> =>
@@ -324,6 +337,7 @@ const startAction = async (
       card,
       conversation: card.conversation,
       earlierTurns: card.actions.slice(0, -1),
+      waitingSteps: card.actionProposal?.proposal ?? null,
       prompt: text,
     }),
   });
@@ -418,7 +432,7 @@ const execute = async (
       return {
         ok: false,
         error: `Step ${index + 1} of ${proposal.steps.length} failed, ${done}: ${messageOf(error)}`,
-        remaining: { summary: proposal.summary, steps: proposal.steps.slice(index) },
+        remaining: { ...proposal, steps: proposal.steps.slice(index) },
       };
     }
   }

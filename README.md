@@ -14,11 +14,12 @@ Prefer your own words? Turn off polishing in the settings and your reply goes ou
 
 The small talk at the bottom can wait until lunch.
 
-![A card opened in dark mode: a prompt and Claude's answer in Actions with steps waiting for approval, and the conversation with your own message on the right](docs/images/card-detail-dark.png)
+![A card opened in dark mode: Claude's answer in Actions with the steps it proposes waiting for approval under it, and the start of the conversation below](docs/images/card-detail-dark.png)
 
 ## What it does
 
-- Collects DMs, group DMs, @mentions and replies in your threads every 5 minutes while Claude Code is open. One conversation is one card; answer it in Slack and the card goes away.
+- Collects DMs, group DMs, @mentions, `@here`, `@channel`, `@everyone` and replies in your threads every 5 minutes while Claude Code is open. One conversation is one card; answer it in Slack and the card goes away.
+- Keeps everything else posted in your channels in Other messages at the end of the board, grouped by channel, until you mark it read.
 - Ranks cards by what they need from you: Decision, Action, Info or Small talk.
 - Shows status, assignee and priority of every Jira ticket a message mentions. Claude summarises a ticket only when you ask.
 - Shows the whole conversation from Slack, your own messages included, and marks where the messages waiting for you start.
@@ -26,7 +27,7 @@ The small talk at the bottom can wait until lunch.
 - Runs prompts about a conversation in Actions the way Claude Code does: Claude looks things up with your connectors, answers on the card, and proposes any change as steps you approve.
 - Replies in the thread of any message you click and starts new messages to people or channels.
 - Typo-tolerant search across people, channels, messages and tickets, filters, grouping into sections, tiles or list, light and dark theme.
-- Mentions show as names; click one to start a message to that person.
+- Mentions people and links channels when you type `@` or `#` in a reply. Mentions in messages show as names; click one to start a message to that person.
 
 ## Requirements
 
