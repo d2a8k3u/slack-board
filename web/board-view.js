@@ -69,7 +69,7 @@ export function statusOf(card) {
   if (card.pending?.kind === "propose") return "drafting";
   if (card.pending?.kind === "act") return "working";
   if (card.pending?.kind === "execute") return "sending";
-  if (card.proposal !== null) return "proposal";
+  if (card.proposal !== null || card.actionProposal !== null) return "proposal";
   if (card.error !== null) return "failed";
   return "new";
 }
@@ -243,12 +243,26 @@ function mergedRanges(ranges) {
   return merged;
 }
 
+const newTurn = (earlier, card) =>
+  card.actions.length > earlier.actions.length ? card.actions.at(-1) : undefined;
+
+const failedStepsRun = (earlier, card) => {
+  const turn = newTurn(earlier, card);
+  return earlier.pending?.kind === "execute" && turn?.isFailed === true ? turn : undefined;
+};
+
+const hasNewActionProposal = (earlier, card) =>
+  card.actionProposal !== null && card.actionProposal.turn !== earlier.actionProposal?.turn;
+
 const changeOf = (earlier, card) => {
   if (card.error !== null && card.error !== earlier.error)
-    return { kind: "failed", card, work: earlier.pending?.kind ?? null };
+    return { kind: "failed", card, work: earlier.pending?.kind ?? null, error: card.error };
+  const failedRun = failedStepsRun(earlier, card);
+  if (failedRun !== undefined)
+    return { kind: "failed", card, work: "execute", error: failedRun.text };
   if (card.proposal !== null && earlier.proposal === null) return { kind: "proposal", card };
-  if (card.actions.length > earlier.actions.length && card.actions.at(-1)?.author === "claude")
-    return { kind: "answered", card };
+  if (hasNewActionProposal(earlier, card)) return { kind: "proposal", card };
+  if (newTurn(earlier, card)?.author === "claude") return { kind: "answered", card };
   return null;
 };
 
@@ -260,7 +274,8 @@ export function cardChanges(previous, next) {
       const now = after.get(card.key);
       return (
         card.pending?.kind === "execute" &&
-        (now === undefined || (now.pending === null && now.error === null))
+        (now === undefined ||
+          (now.pending === null && now.error === null && failedStepsRun(card, now) === undefined))
       );
     })
     .map((card) => ({ kind: "sent", card }));
@@ -278,6 +293,8 @@ export const CONTROLS = {
   approve: "approve",
   discard: "discard",
   run: "run",
+  approveSteps: "approveSteps",
+  discardSteps: "discardSteps",
 };
 
 const controlForWork = (card) => {
@@ -287,6 +304,7 @@ const controlForWork = (card) => {
     case "act":
       return CONTROLS.run;
     case "execute":
+      if (card.actionProposal?.isRunning === true) return CONTROLS.approveSteps;
       return card.proposal === null ? CONTROLS.send : CONTROLS.approve;
     default:
       return null;
