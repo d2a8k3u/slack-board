@@ -24,6 +24,8 @@ import {
   TYPE_LABELS,
   titleRanges,
 } from "./board-view.js";
+import { mentionField } from "./mention-field.js";
+import { mentionChoices } from "./mentions.js";
 import { cardNotices, newsNotices, syncNotices } from "./notifications.js";
 import { safeHref, slackTokens } from "./slack-text.js";
 
@@ -53,6 +55,7 @@ const NOTIFY_ICON_PX = 18;
 const PEOPLE_DEBOUNCE_MS = 120;
 const LOOKUP_DEBOUNCE_MS = 500;
 const LOOKUP_MIN_CHARS = 2;
+const SINGLE_WORD = /^\S+$/;
 const TIME_REFRESH_MS = 30_000;
 const ANNOUNCE_DELAY_MS = 60;
 const MS_PER_SECOND = 1000;
@@ -325,9 +328,21 @@ const compose = {
   peopleRequest: 0,
   peopleTimer: 0,
   lookupTimer: 0,
-  requestedLookups: new Set(),
   lookupSignature: "",
   error: null,
+};
+
+const lookups = { requested: new Set() };
+
+const mention = {
+  searched: "",
+  loaded: "",
+  people: [],
+  request: 0,
+  peopleTimer: 0,
+  lookupTimer: 0,
+  error: null,
+  refresh: null,
 };
 
 const cardNodes = new Map();
@@ -925,6 +940,7 @@ function applyState(state) {
   if (ui.openKey !== null && findCard(ui.openKey) === undefined) closeDetail();
   rerunLookupMerge();
   render();
+  mention.refresh?.();
   openPendingCard();
 }
 
@@ -1175,13 +1191,13 @@ function deliver(key, text, options) {
 }
 
 async function submitComposer(key, submit = deliver, control = CONTROLS.draft) {
-  const field = detail?.composerField;
-  const text = field?.value.trim() ?? "";
+  const mentions = detail?.composerMentions;
+  const text = mentions?.slack().trim() ?? "";
   const scope = scopeOf("propose", key);
-  if (text === "") return rejectSubmit(scope, EMPTY_COMPOSER_MESSAGE, field);
+  if (text === "") return rejectSubmit(scope, EMPTY_COMPOSER_MESSAGE, mentions);
   if (!(await submit(key, text, { scope, control }))) return;
   memory.drafts.delete(key);
-  if (detail?.key === key) detail.composerField.value = "";
+  if (detail?.key === key) detail.composerMentions.set("");
 }
 
 function sendReaction(key, reaction) {
@@ -1211,10 +1227,10 @@ function requestHistory(key) {
   void runAction(scopeOf("history", key), () => api("POST", `${cardPath(key)}/history`));
 }
 
-async function sendThreadReply(key, ts, field, submit = deliver, control = CONTROLS.draft) {
-  const text = field.value.trim();
+async function sendThreadReply(key, ts, mentions, submit = deliver, control = CONTROLS.draft) {
+  const text = mentions.slack().trim();
   const scope = scopeOf("thread", threadDraftKey(key, ts));
-  if (text === "") return rejectSubmit(scope, EMPTY_THREAD_MESSAGE, field);
+  if (text === "") return rejectSubmit(scope, EMPTY_THREAD_MESSAGE, mentions);
   if (!(await submit(key, text, { scope, control: threadControl(control, ts), replyToTs: ts })))
     return;
   memory.threadDrafts.delete(threadDraftKey(key, ts));
@@ -2249,9 +2265,11 @@ function buildComposer(key, refs) {
     "aria-describedby": "composer-status",
     onkeydown: submitOnModEnter,
   });
-  refs.composerField.value = memory.drafts.get(key) ?? "";
-  refs.composerField.addEventListener("input", () =>
-    memory.drafts.set(key, refs.composerField.value),
+  refs.composerMentions = mentionsFor(
+    refs.composerField,
+    key,
+    memory.drafts.get(key) ?? "",
+    (slack) => memory.drafts.set(key, slack),
   );
   refs.reactionButtons = QUICK_REACTIONS.map((reaction) =>
     el(
@@ -2301,7 +2319,7 @@ function buildComposer(key, refs) {
       class: "field-label",
       text: board.polish ? "Reply, emoji or instruction" : "Reply or emoji code",
     }),
-    refs.composerField,
+    refs.composerMentions.node,
     el(
       "div",
       { class: "button-row" },
@@ -2404,6 +2422,7 @@ function updateActions(refs, card) {
 function stepsNode(card, refs) {
   const waiting = card.actionProposal;
   const parts = approvalParts(waiting.proposal, waiting.approveCloses, {
+    cardKey: card.key,
     texts: editsFor(memory.actionEdits, card.key, waiting.proposal),
     replyLabel: replyPlaceLabel(card, waiting.proposal),
     idPrefix: "actions",
@@ -2599,8 +2618,9 @@ function threadReplyForm(cardKey, message) {
       : "Your thread reply, sent exactly as you write it.",
     onkeydown: submitOnModEnter,
   });
-  field.value = memory.threadDrafts.get(draftKey) ?? "";
-  field.addEventListener("input", () => memory.threadDrafts.set(draftKey, field.value));
+  const mentions = mentionsFor(field, cardKey, memory.threadDrafts.get(draftKey) ?? "", (slack) =>
+    memory.threadDrafts.set(draftKey, slack),
+  );
   const submit = el(
     "button",
     { type: "submit", class: "sb-btn button button-strong button-small" },
@@ -2614,7 +2634,7 @@ function threadReplyForm(cardKey, message) {
           class: "sb-chip button button-outline button-small",
           onclick: (event) =>
             !isDisabled(event.currentTarget) &&
-            void sendThreadReply(cardKey, message.ts, field, sendAsWritten, CONTROLS.send),
+            void sendThreadReply(cardKey, message.ts, mentions, sendAsWritten, CONTROLS.send),
         },
         "Send as written",
       )
@@ -2626,7 +2646,7 @@ function threadReplyForm(cardKey, message) {
       class: "thread-reply sb-section",
       onsubmit: (event) => {
         event.preventDefault();
-        if (!isDisabled(submit)) void sendThreadReply(cardKey, message.ts, field);
+        if (!isDisabled(submit)) void sendThreadReply(cardKey, message.ts, mentions);
       },
     },
     el("label", {
@@ -2636,7 +2656,7 @@ function threadReplyForm(cardKey, message) {
         ? "Reply in the thread of your message"
         : `Reply to ${message.authorName} in a thread`,
     }),
-    field,
+    mentions.node,
     el(
       "div",
       { class: "button-row" },
@@ -2871,7 +2891,7 @@ function updateProposal(refs, card) {
 function approvalParts(
   proposal,
   approveCloses,
-  { texts, replyLabel, idPrefix, onApprove, onDiscard },
+  { cardKey, texts, replyLabel, idPrefix, onApprove, onDiscard },
 ) {
   const approveButton = el(
     "button",
@@ -2898,7 +2918,9 @@ function approvalParts(
     steps: el(
       "ol",
       { class: "steps" },
-      ...proposal.steps.map((step, index) => stepItem(step, index, texts, replyLabel, idPrefix)),
+      ...proposal.steps.map((step, index) =>
+        stepItem(step, index, { cardKey, texts, replyLabel, idPrefix }),
+      ),
     ),
     buttons: [approveButton, discardButton],
     hint: el("span", {
@@ -2913,6 +2935,7 @@ function approvalParts(
 
 function proposalNodes(card, note, refs) {
   const parts = approvalParts(card.proposal, card.approveCloses, {
+    cardKey: card.key,
     texts: editsFor(memory.edits, card.key, card.proposal),
     replyLabel: replyPlaceLabel(card, card.proposal),
     idPrefix: "proposal",
@@ -2927,7 +2950,7 @@ function proposalNodes(card, note, refs) {
           "div",
           { class: "proposal-note" },
           el("p", { class: "proposal-note-label", text: "Your note" }),
-          el("p", { class: "proposal-note-text", text: `“${note}”` }),
+          el("p", { class: "proposal-note-text", text: `“${plainText(note)}”` }),
         ),
     el(
       "div",
@@ -2955,7 +2978,7 @@ function proposalNodes(card, note, refs) {
   ].filter((node) => node !== null);
 }
 
-function stepItem(step, index, texts, replyLabel, idPrefix) {
+function stepItem(step, index, reply) {
   const isReply = step.type === "slack_reply";
   return el(
     "li",
@@ -2965,7 +2988,7 @@ function stepItem(step, index, texts, replyLabel, idPrefix) {
       "aria-hidden": "true",
       text: String(index + 1),
     }),
-    el("div", { class: "step-content" }, ...stepContent(step, index, texts, replyLabel, idPrefix)),
+    el("div", { class: "step-content" }, ...stepContent(step, index, reply)),
   );
 }
 
@@ -2973,7 +2996,7 @@ const issueChip = (issueKey) => el("span", { class: "key-chip", text: issueKey }
 const connectorToolName = (tool) => tool.split("__").slice(2).join("__") || tool;
 const stepTitle = (...parts) => el("p", { class: "step-title" }, ...parts);
 
-function stepContent(step, index, texts, replyLabel, idPrefix) {
+function stepContent(step, index, { cardKey, texts, replyLabel, idPrefix }) {
   switch (step.type) {
     case "slack_reply": {
       const fieldId = `${idPrefix}-reply-step-${index}`;
@@ -2983,9 +3006,10 @@ function stepContent(step, index, texts, replyLabel, idPrefix) {
         rows: "4",
         "data-focus-key": fieldId,
       });
-      field.value = texts.get(index) ?? step.text;
-      field.addEventListener("input", () => texts.set(index, field.value));
-      return [el("label", { for: fieldId, class: "step-label", text: replyLabel }), field];
+      const mentions = mentionsFor(field, cardKey, texts.get(index) ?? step.text, (slack) =>
+        texts.set(index, slack),
+      );
+      return [el("label", { for: fieldId, class: "step-label", text: replyLabel }), mentions.node];
     }
     case "slack_reaction":
       return [stepTitle(`React with :${String(step.emoji).replace(/^:|:$/g, "")}:`)];
@@ -3070,11 +3094,16 @@ function onComposeInput() {
     () => void loadPeople(query).catch(reportDefect),
     PEOPLE_DEBOUNCE_MS,
   );
-  if (query.length >= LOOKUP_MIN_CHARS && !compose.requestedLookups.has(query))
+  if (query.length >= LOOKUP_MIN_CHARS && !lookups.requested.has(query))
     compose.lookupTimer = setTimeout(
-      () => void requestLookup(query).catch(reportDefect),
+      () => void requestLookup(query, (message) => failComposeLookup(query, message)),
       LOOKUP_DEBOUNCE_MS,
     );
+  renderCompose();
+}
+
+function failComposeLookup(query, message) {
+  if (composeQueryText() === query) compose.error = message;
   renderCompose();
 }
 
@@ -3094,18 +3123,88 @@ async function loadPeople(query) {
   renderCompose();
 }
 
-async function requestLookup(query) {
-  compose.requestedLookups.add(query);
+async function requestLookup(query, onFailure) {
+  lookups.requested.add(query);
   try {
     await api("POST", "/api/lookup", { query });
   } catch (error) {
-    if (!(error instanceof ApiError)) throw error;
-    compose.requestedLookups.delete(query);
-    if (error.status !== 401 && composeQueryText() === query) compose.error = error.message;
-    renderCompose();
+    if (!(error instanceof ApiError)) return reportDefect(error);
+    lookups.requested.delete(query);
+    if (error.status !== 401) onFailure(error.message);
     return;
   }
   void refreshNow();
+}
+
+function searchMentions(trigger, query, refresh) {
+  clearTimeout(mention.peopleTimer);
+  clearTimeout(mention.lookupTimer);
+  const searched = trigger + query;
+  mention.searched = searched;
+  mention.error = null;
+  mention.refresh = refresh;
+  mention.peopleTimer = setTimeout(
+    () => void loadMentionPeople(trigger, query),
+    PEOPLE_DEBOUNCE_MS,
+  );
+  if (query.length >= LOOKUP_MIN_CHARS && SINGLE_WORD.test(query) && !lookups.requested.has(query))
+    mention.lookupTimer = setTimeout(
+      () => void requestLookup(query, (message) => failMentionSearch(searched, message)),
+      LOOKUP_DEBOUNCE_MS,
+    );
+}
+
+function failMentionSearch(searched, message) {
+  if (mention.searched !== searched) return;
+  mention.error = message;
+  mention.refresh?.();
+}
+
+async function loadMentionPeople(trigger, query) {
+  const request = ++mention.request;
+  const kind = trigger === "#" ? "channel" : "person";
+  try {
+    const people = readPeople(
+      await api("GET", `/api/people?q=${encodeURIComponent(query)}&kind=${kind}`),
+    );
+    if (request !== mention.request) return;
+    mention.people = people;
+    mention.loaded = trigger + query;
+  } catch (error) {
+    if (!(error instanceof ApiError)) return reportDefect(error);
+    if (request !== mention.request || error.status === 401) return;
+    mention.error = error.message;
+  }
+  mention.refresh?.();
+}
+
+function mentionChoicesFor(cardKey, trigger, query) {
+  const card = findCard(cardKey);
+  if (card === undefined) return { entries: [], error: null };
+  const searched = trigger + query;
+  const lookup = board.lookup?.query === query ? board.lookup : null;
+  return {
+    entries: mentionChoices({
+      trigger,
+      query,
+      card,
+      people: mention.loaded === searched ? mention.people : [],
+      found: lookup?.results ?? [],
+    }),
+    error: mention.searched === searched ? (mention.error ?? lookup?.error ?? null) : null,
+  };
+}
+
+function mentionsFor(textarea, cardKey, slack, onChange) {
+  return mentionField({
+    textarea,
+    slack,
+    onChange,
+    nameOf: knownName,
+    announce,
+    choices: (trigger, query) => mentionChoicesFor(cardKey, trigger, query),
+    onSearch: searchMentions,
+  });
 }
 
 function currentLookup() {
@@ -3133,7 +3232,7 @@ function mergedRecipients() {
 
 function composeStatusText(query, results) {
   if (compose.peopleQuery === null) return "Searching…";
-  const lookupPending = compose.requestedLookups.has(query) && currentLookup() === null;
+  const lookupPending = lookups.requested.has(query) && currentLookup() === null;
   if (results.length === 0 && !lookupPending)
     return query === "" ? "No recent people yet." : `No person or channel matches “${query}”.`;
   return lookupPending ? "Searching Slack for more matches…" : "";
