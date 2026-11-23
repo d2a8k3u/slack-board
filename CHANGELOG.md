@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- A new reply in a thread where you were only mentioned, also by `@here`, `@channel` or `@everyone`, comes to the board while the thread's card is open and for 30 days after you handle it. Until now such replies never showed up; only threads you wrote in brought theirs.
+
 ## 0.4.0
 
 - Type `@` or `#` at the start of a word in a reply box, a thread reply box or the reply text of a proposal to mention someone or link a channel. The list shows the people in the conversation first, then people and channels from your other conversations and earlier searches, then what a Slack search finds; on a channel card it also offers `@here`, `@channel` and `@everyone`. The line under the box says who your text notifies and which channels it links.
