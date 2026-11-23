@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { checkProposal, directProposal, SLACK_TEXT_LIMIT } from "../core/proposal.ts";
-import type { ChannelRead, NotifySettings } from "../core/types.ts";
+import type { ChannelRead, NotifySettings, StepsApproval } from "../core/types.ts";
 import type { BoardStore } from "./store.ts";
 
 export type BoardServerOptions = {
@@ -147,6 +147,16 @@ const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): 
   };
   const queued = (accepted: boolean) =>
     accepted ? { status: 202 } : refuse(409, "Claude is still working on this card");
+  const stepsQueued = (approval: StepsApproval) => {
+    switch (approval) {
+      case "queued":
+        return queued(true);
+      case "busy":
+        return queued(false);
+      case "gone":
+        return refuse(404, "These steps no longer wait for your approval");
+    }
+  };
   return [
     {
       method: "GET",
@@ -249,6 +259,25 @@ const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): 
         cardExists(key);
         replyTarget(key, check.proposal.replyToTs);
         return queued(store.approve(key, check.proposal, new Date()));
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cards\/([^/]+)\/turns\/(\d+)\/approve$/,
+      handle: async ([key = "", turn = ""], body) => {
+        const check = checkProposal(record(await body()).proposal, projectKeys);
+        if (!check.ok) return refuse(400, check.reason);
+        cardExists(key);
+        replyTarget(key, check.proposal.replyToTs);
+        return stepsQueued(store.approveSteps(key, Number(turn), check.proposal, new Date()));
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cards\/([^/]+)\/turns\/(\d+)\/discard$/,
+      handle: async ([key = "", turn = ""]) => {
+        store.discardSteps(key, Number(turn));
+        return { status: 204 };
       },
     },
     {

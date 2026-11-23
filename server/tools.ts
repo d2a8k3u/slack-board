@@ -76,6 +76,7 @@ export const TOOLS: ToolDefinition[] = [
         tickets: card.tickets.map((ticket) => ticket.key),
         priority: card.priority,
         proposal: card.proposal?.summary ?? null,
+        actionProposal: card.actionProposal?.proposal.summary ?? null,
         error: card.error,
       })),
   },

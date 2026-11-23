@@ -14,6 +14,7 @@ import {
 import { answersConversation } from "../core/steps.ts";
 import { ticketKeys } from "../core/tickets.ts";
 import type {
+  ActionProposal,
   ActionTurn,
   BoardCard,
   CardKind,
@@ -38,9 +39,11 @@ import type {
   RequestKind,
   RequestStatus,
   SlackHit,
+  StepsApproval,
   SyncState,
   TicketDetails,
   TicketState,
+  WaitingSteps,
 } from "../core/types.ts";
 
 export const STALE_CLAIM_MS = 120_000;
@@ -86,7 +89,8 @@ CREATE TABLE IF NOT EXISTS card_context (
   actions TEXT NOT NULL DEFAULT '[]',
   history TEXT,
   history_ts TEXT,
-  history_error TEXT
+  history_error TEXT,
+  action_proposal TEXT
 );
 CREATE TABLE IF NOT EXISTS channel_messages (
   key TEXT PRIMARY KEY,
@@ -114,12 +118,13 @@ CREATE TABLE tickets (
 );
 `;
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const MAX_PEOPLE_RESULTS = 20;
 const MAX_RANKING_BATCH = 20;
 const RANKING_MESSAGES = 5;
 const RANKING_TEXT_CHARS = 600;
 const PRIORITY_COLUMNS = ["priority", "priority_reason", "priority_ts"];
+const CONTEXT_COLUMNS = ["action_proposal"];
 const BACKGROUND_KINDS = ["details", "classify"];
 
 type CardRow = {
@@ -143,6 +148,7 @@ type ContextRow = {
   history: string | null;
   history_ts: string | null;
   history_error: string | null;
+  action_proposal: string | null;
 };
 
 type HistoryInput = { key: string; channelId: string; threadTs: string | null; latestTs: string };
@@ -251,10 +257,43 @@ export type SyncInput = {
 
 const iso = (date: Date): string => date.toISOString();
 
-const runProposalOf = (request: RequestRow): Proposal =>
-  (JSON.parse(request.input) as { proposal: Proposal }).proposal;
+type Run = { proposal: Proposal; turn?: number };
+
+const runOf = (request: RequestRow): Run => JSON.parse(request.input) as Run;
+
+const claudeTurn = (
+  text: string,
+  now: Date,
+  isFailed: boolean,
+  tools: string[] = [],
+): ActionTurn => ({
+  author: "claude",
+  text,
+  at: iso(now),
+  tools,
+  isFailed,
+});
+
+const doneTurn = (proposal: Proposal, now: Date): ActionTurn =>
+  claudeTurn(`Done: ${proposal.summary}`, now, false);
 
 const lastTs = (messages: CardMessage[]): string | null => messages.at(-1)?.ts ?? null;
+
+const waitingStepsOf = (json: string | null): WaitingSteps | null =>
+  json === null ? null : (JSON.parse(json) as WaitingSteps);
+
+const actionProposalOf = (
+  json: string | null,
+  runningTurn: number | null,
+): ActionProposal | null => {
+  const waiting = waitingStepsOf(json);
+  if (waiting === null) return null;
+  return {
+    ...waiting,
+    approveCloses: answersConversation(waiting.proposal.steps),
+    isRunning: waiting.turn === runningTurn,
+  };
+};
 
 type InboxRow = CardRow & { kind: ConversationKind };
 
@@ -294,7 +333,8 @@ export class BoardStore {
     if (version >= SCHEMA_VERSION) return;
     this.#transaction(() => {
       if (version < 2) this.#rebuildTickets();
-      this.#addPriorityColumns();
+      this.#addMissingColumns("cards", PRIORITY_COLUMNS);
+      this.#addMissingColumns("card_context", CONTEXT_COLUMNS);
       if (version < 4) this.#db.exec("UPDATE cards SET priority_ts = NULL WHERE priority IS NULL");
       this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     });
@@ -311,14 +351,14 @@ export class BoardStore {
     }
   }
 
-  #addPriorityColumns(): void {
+  #addMissingColumns(table: string, columns: string[]): void {
     const existing = new Set(
-      (this.#db.prepare("PRAGMA table_info(cards)").all() as { name: string }[]).map(
+      (this.#db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
         (column) => column.name,
       ),
     );
-    for (const column of PRIORITY_COLUMNS)
-      if (!existing.has(column)) this.#db.exec(`ALTER TABLE cards ADD COLUMN ${column} TEXT`);
+    for (const column of columns)
+      if (!existing.has(column)) this.#db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
   }
 
   close(): void {
@@ -414,7 +454,8 @@ export class BoardStore {
   cards(): BoardCard[] {
     const rows = this.#db
       .prepare(
-        `SELECT cards.*, card_context.actions, card_context.history, card_context.history_error
+        `SELECT cards.*, card_context.actions, card_context.history, card_context.history_error,
+         card_context.action_proposal
          FROM cards LEFT JOIN card_context ON card_context.key = cards.key ORDER BY updated_at DESC`,
       )
       .all() as (CardRow & Omit<ContextRow, "history_ts">)[];
@@ -428,12 +469,23 @@ export class BoardStore {
           .all() as TicketRow[]
       ).map((row) => [row.key, ticketOf(row)]),
     );
+    const openRows = this.#db
+      .prepare(
+        "SELECT card_key, kind, status, json_extract(input, '$.turn') AS turn FROM requests WHERE card_key IS NOT NULL",
+      )
+      .all() as {
+      card_key: string;
+      kind: RequestKind;
+      status: RequestStatus;
+      turn: number | null;
+    }[];
     const open = new Map(
-      (
-        this.#db
-          .prepare("SELECT card_key, kind, status FROM requests WHERE card_key IS NOT NULL")
-          .all() as { card_key: string; kind: RequestKind; status: RequestStatus }[]
-      ).map((row) => [row.card_key, { kind: row.kind, status: row.status }]),
+      openRows.map((row) => [row.card_key, { kind: row.kind, status: row.status }]),
+    );
+    const runningTurns = new Map(
+      openRows.flatMap((row) =>
+        row.kind === "execute" && row.turn !== null ? [[row.card_key, row.turn]] : [],
+      ),
     );
     return rows.map((row) => {
       const proposal = row.proposal === null ? null : (JSON.parse(row.proposal) as Proposal);
@@ -455,6 +507,7 @@ export class BoardStore {
           .filter((ticket) => ticket !== undefined),
         proposal,
         approveCloses: proposal !== null && answersConversation(proposal.steps),
+        actionProposal: actionProposalOf(row.action_proposal, runningTurns.get(row.key) ?? null),
         pending: open.get(row.key) ?? null,
         error: row.error,
         updatedAt: row.updated_at,
@@ -561,6 +614,21 @@ export class BoardStore {
 
   send(key: string, proposal: Proposal, now: Date): boolean {
     return this.#queueRun(key, proposal, null, now);
+  }
+
+  discardSteps(key: string, turn: number): void {
+    this.#transaction(() => {
+      if (this.#waitingSteps(key)?.turn === turn) this.#saveWaitingSteps(key, null);
+    });
+  }
+
+  approveSteps(key: string, turn: number, proposal: Proposal, now: Date): StepsApproval {
+    return this.#transaction(() => {
+      if (this.#waitingSteps(key)?.turn !== turn) return "gone";
+      if (!this.#enqueue("execute", key, { proposal, turn }, now)) return "busy";
+      this.#saveWaitingSteps(key, { turn, proposal });
+      return "queued";
+    });
   }
 
   #queueRun(key: string, proposal: Proposal, shownProposal: Proposal | null, now: Date): boolean {
@@ -696,15 +764,7 @@ export class BoardStore {
         this.#applyHistory(JSON.parse(request.input) as HistoryInput, outcome);
         return;
       case "execute":
-        if (outcome.ok) this.#applyRun(request, now);
-        else
-          this.#db
-            .prepare("UPDATE cards SET error = ?, proposal = ? WHERE key = ?")
-            .run(
-              outcome.error,
-              JSON.stringify(outcome.remaining ?? runProposalOf(request)),
-              request.card_key,
-            );
+        this.#applyRun(request.card_key ?? "", runOf(request), outcome, now);
         return;
       case "details":
         this.#db
@@ -754,26 +814,21 @@ export class BoardStore {
   }
 
   #applyAnswer(key: string, outcome: FinishOutcome, now: Date): void {
-    const claude = (text: string, isFailed: boolean, tools: string[] = []): ActionTurn => ({
-      author: "claude",
-      text,
-      at: iso(now),
-      tools,
-      isFailed,
-    });
     if (!outcome.ok) {
-      this.#appendTurn(key, claude(outcome.error, true));
+      this.#appendTurn(key, claudeTurn(outcome.error, now, true));
       return;
     }
-    this.#appendTurn(key, claude(outcome.reply ?? "", false, outcome.tools));
+    const turn = this.#appendTurn(key, claudeTurn(outcome.reply ?? "", now, false, outcome.tools));
     if (outcome.proposal !== undefined)
-      this.#db
-        .prepare("UPDATE cards SET proposal = ?, error = NULL WHERE key = ?")
-        .run(JSON.stringify(outcome.proposal), key);
+      this.#saveWaitingSteps(key, { turn, proposal: outcome.proposal });
     if (outcome.proposalError !== undefined)
       this.#appendTurn(
         key,
-        claude(`The board refused the steps Claude proposed: ${outcome.proposalError}`, true),
+        claudeTurn(
+          `The board refused the steps Claude proposed: ${outcome.proposalError}`,
+          now,
+          true,
+        ),
       );
   }
 
@@ -787,29 +842,54 @@ export class BoardStore {
     else this.#saveContext(input.key, { history_error: outcome.error });
   }
 
-  #applyRun(request: RequestRow, now: Date): void {
-    const key = request.card_key ?? "";
-    const proposal = runProposalOf(request);
-    if (answersConversation(proposal.steps)) {
+  #applyRun(key: string, run: Run, outcome: FinishOutcome, now: Date): void {
+    if (outcome.ok && answersConversation(run.proposal.steps)) {
       this.#closeCard(key, now);
       return;
     }
-    this.#db.prepare("UPDATE cards SET proposal = NULL, error = NULL WHERE key = ?").run(key);
-    this.#appendTurn(key, {
-      author: "claude",
-      text: `Done: ${proposal.summary}`,
-      at: iso(now),
-      tools: [],
-      isFailed: false,
-    });
+    if (run.turn === undefined) this.#finishReplyRun(key, run.proposal, outcome, now);
+    else this.#finishStepsRun(key, { turn: run.turn, proposal: run.proposal }, outcome, now);
   }
 
-  #appendTurn(key: string, turn: ActionTurn): void {
+  #finishReplyRun(key: string, proposal: Proposal, outcome: FinishOutcome, now: Date): void {
+    if (!outcome.ok) {
+      this.#db
+        .prepare("UPDATE cards SET error = ?, proposal = ? WHERE key = ?")
+        .run(outcome.error, JSON.stringify(outcome.remaining ?? proposal), key);
+      return;
+    }
+    this.#db.prepare("UPDATE cards SET proposal = NULL, error = NULL WHERE key = ?").run(key);
+    this.#appendTurn(key, doneTurn(proposal, now));
+  }
+
+  #finishStepsRun(key: string, run: WaitingSteps, outcome: FinishOutcome, now: Date): void {
+    if (!outcome.ok) {
+      this.#saveWaitingSteps(key, { turn: run.turn, proposal: outcome.remaining ?? run.proposal });
+      this.#appendTurn(key, claudeTurn(outcome.error, now, true));
+      return;
+    }
+    this.#saveWaitingSteps(key, null);
+    this.#appendTurn(key, doneTurn(run.proposal, now));
+  }
+
+  #appendTurn(key: string, turn: ActionTurn): number {
     const row = this.#db.prepare("SELECT actions FROM card_context WHERE key = ?").get(key) as
       | { actions: string }
       | undefined;
     const actions = row === undefined ? [] : (JSON.parse(row.actions) as ActionTurn[]);
     this.#saveContext(key, { actions: JSON.stringify([...actions, turn]) });
+    return actions.length;
+  }
+
+  #waitingSteps(key: string): WaitingSteps | null {
+    const row = this.#db
+      .prepare("SELECT action_proposal FROM card_context WHERE key = ?")
+      .get(key) as Pick<ContextRow, "action_proposal"> | undefined;
+    return waitingStepsOf(row?.action_proposal ?? null);
+  }
+
+  #saveWaitingSteps(key: string, waiting: WaitingSteps | null): void {
+    this.#saveContext(key, { action_proposal: waiting === null ? null : JSON.stringify(waiting) });
   }
 
   #saveContext(key: string, fields: Partial<Record<keyof ContextRow, string | null>>): void {
