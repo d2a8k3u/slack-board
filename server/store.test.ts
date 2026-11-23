@@ -271,6 +271,14 @@ test(
       { channelId: "C01", label: "#backend", kind: "channel" },
     ]);
     assert.equal(store.searchPeople("").length, 4);
+    assert.deepEqual(
+      store.searchPeople("", "channel").map((person) => person.label),
+      ["#backend"],
+    );
+    assert.deepEqual(
+      store.searchPeople("b", "person").map((person) => person.label),
+      ["Anna Berg", "Bob Kral"],
+    );
   }),
 );
 

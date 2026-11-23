@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { checkProposal, directProposal, SLACK_TEXT_LIMIT } from "../core/proposal.ts";
-import type { ChannelRead, NotifySettings, StepsApproval } from "../core/types.ts";
+import type { ChannelRead, NotifySettings, Recipient, StepsApproval } from "../core/types.ts";
 import type { BoardStore } from "./store.ts";
 
 export type BoardServerOptions = {
@@ -52,6 +52,18 @@ type Route = {
 
 const refuse = (status: number, message: string): never => {
   throw new HttpRefusal(status, message);
+};
+
+const RECIPIENT_KINDS: readonly Recipient["kind"][] = ["person", "channel"];
+
+const isRecipientKind = (value: string): value is Recipient["kind"] =>
+  (RECIPIENT_KINDS as readonly string[]).includes(value);
+
+const recipientKind = (url: URL): Recipient["kind"] | null => {
+  const kind = url.searchParams.get("kind");
+  if (kind === null) return null;
+  if (!isRecipientKind(kind)) return refuse(400, `kind must be ${RECIPIENT_KINDS.join(" or ")}`);
+  return kind;
 };
 
 const record = (value: unknown): Record<string, unknown> => {
@@ -311,7 +323,7 @@ const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): 
         const query = url.searchParams.get("q") ?? "";
         if (query.length > MAX_QUERY_CHARS)
           return refuse(400, `q holds at most ${MAX_QUERY_CHARS} characters`);
-        return { status: 200, body: { people: store.searchPeople(query) } };
+        return { status: 200, body: { people: store.searchPeople(query, recipientKind(url)) } };
       },
     },
     {

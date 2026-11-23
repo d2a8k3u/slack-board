@@ -691,12 +691,12 @@ export class BoardStore {
     });
   }
 
-  searchPeople(query: string): Recipient[] {
+  searchPeople(query: string, kind: Recipient["kind"] | null = null): Recipient[] {
     const rows = this.#db
       .prepare(
-        `SELECT channel_id, label, kind FROM people WHERE label LIKE ? ESCAPE '\\' ORDER BY kind = 'channel', seen_at DESC, label LIMIT ?`,
+        `SELECT channel_id, label, kind FROM people WHERE label LIKE ? ESCAPE '\\' AND (? IS NULL OR kind = ?) ORDER BY kind = 'channel', seen_at DESC, label LIMIT ?`,
       )
-      .all(likePattern(query.trim()), MAX_PEOPLE_RESULTS) as PersonRow[];
+      .all(likePattern(query.trim()), kind, kind, MAX_PEOPLE_RESULTS) as PersonRow[];
     return rows.map(recipientOf);
   }
 
