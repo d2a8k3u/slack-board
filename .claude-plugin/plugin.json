@@ -66,8 +66,8 @@
     },
     "lookback_days": {
       "type": "number",
-      "title": "First sync lookback (days)",
-      "description": "How far back the first sync looks for messages",
+      "title": "Lookback (days)",
+      "description": "How far back the first sync looks for messages, and how long a message stays in Other messages",
       "default": 7
     },
     "notify_new_messages": {
