@@ -41,7 +41,8 @@ The board page listens on 127.0.0.1 only. Every API request needs a random secre
 - While Claude works on a prompt, the card takes no reply, reaction or other prompt until the answer is in.
 - Avatars show initials: the Slack connector does not return profile photos.
 - A thread you once wrote in keeps bringing its new replies to the board; Ignore a busy thread to quiet it until the next message.
-- A sync loads at most 100 channel messages, thread replies included. When a sync finds more, Other messages says some are missing, and an `@here`, `@channel` or `@everyone` among the missing ones gets no card.
+- A thread where you were only mentioned, also by `@here`, `@channel` or `@everyone`, brings its new replies while its card is open and for 30 days after you handle it, and only from channels you are a member of.
+- A sync loads at most 100 channel messages, thread replies included. When a sync finds more, Other messages says some are missing; an `@here`, `@channel` or `@everyone` among them gets no card, and neither does a reply in a thread where you were mentioned.
 - A mention of a user group you belong to, such as `@backend`, brings no card: the Slack connector does not say which groups you are in.
 - A user group in a message shows as `@group`, and the `@` list in a reply offers no user groups: the Slack connector gives the board a group's ID but not its name.
 - The board cannot tell what you already read in Slack or which channels you muted, so Other messages shows them all until you mark them read on the board.
