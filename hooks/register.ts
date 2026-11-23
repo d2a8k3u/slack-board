@@ -337,6 +337,7 @@ const startAction = async (
       card,
       conversation: card.conversation,
       earlierTurns: card.actions.slice(0, -1),
+      waitingSteps: card.actionProposal?.proposal ?? null,
       prompt: text,
     }),
   });

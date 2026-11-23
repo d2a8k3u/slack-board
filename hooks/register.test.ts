@@ -222,6 +222,29 @@ test(
   },
 );
 
+test(
+  "gives a prompt the steps still waiting in Actions, so Claude's answer revises that version",
+  STYLE,
+  async ($, on) => {
+    const waiting = {
+      summary: "Comment",
+      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+    };
+    const card = {
+      ...CARD,
+      actionProposal: { turn: 1, proposal: waiting, approveCloses: false, isRunning: false },
+    };
+
+    const board = await startBoard($, on, [
+      { id: 9, kind: "act", input: { text: "Also move it to review" }, card },
+    ]);
+
+    expect(String(board.spawned[0]?.prompt)).toContain(
+      `<waiting_steps>\n${JSON.stringify(waiting)}\n</waiting_steps>`,
+    );
+  },
+);
+
 test("runs an approved call of a connector tool with exactly the input that was approved", async ($, on) => {
   const step = { type: "tool_call", tool: CREATE_PAGE, input: { title: "Notes", body: "PROJ-1" } };
   const board = await startBoard($, on, [
