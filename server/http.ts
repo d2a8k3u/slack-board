@@ -29,6 +29,8 @@ const STATIC_FILES: Record<string, { file: string; type: string }> = {
   "/slack-text.js": { file: "slack-text.js", type: "text/javascript; charset=utf-8" },
   "/board-view.js": { file: "board-view.js", type: "text/javascript; charset=utf-8" },
   "/notifications.js": { file: "notifications.js", type: "text/javascript; charset=utf-8" },
+  "/mentions.js": { file: "mentions.js", type: "text/javascript; charset=utf-8" },
+  "/mention-field.js": { file: "mention-field.js", type: "text/javascript; charset=utf-8" },
   "/favicon.svg": { file: "favicon.svg", type: "image/svg+xml" },
 };
 

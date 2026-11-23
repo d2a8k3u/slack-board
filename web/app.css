@@ -1639,6 +1639,61 @@
     border-radius: 12px;
   }
 
+  .mention-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .mention-list {
+    list-style: none;
+    margin: 0;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: min(264px, 40dvh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--line-2);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: 0 8px 24px var(--shadow);
+  }
+  .mention-option {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 12px;
+    border-radius: 10px;
+    border: 2px solid transparent;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .mention-option:hover {
+    background: var(--surface-2);
+  }
+  .mention-option[aria-selected="true"] {
+    background: var(--danger-bg);
+    border-color: var(--accent);
+  }
+  .mention-option-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .mention-option-kind {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .mention-option[aria-selected="true"] .mention-option-kind {
+    color: var(--danger-fg);
+  }
+
   .conversation {
     display: flex;
     flex-direction: column;
