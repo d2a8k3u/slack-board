@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { checkProposal, directProposal, SLACK_TEXT_LIMIT } from "../core/proposal.ts";
-import type { NotifySettings } from "../core/types.ts";
+import type { ChannelRead, NotifySettings } from "../core/types.ts";
 import type { BoardStore } from "./store.ts";
 
 export type BoardServerOptions = {
@@ -15,11 +15,13 @@ export type BoardServerOptions = {
   notify: NotifySettings;
 };
 
+export const MAX_LISTED_CHANNELS = 200;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_INPUT_CHARS = 4000;
 const MAX_QUERY_CHARS = 100;
 const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost"];
 const SLACK_CHANNEL_ID = /^[CDGU][A-Z0-9]{2,}$/;
+const SLACK_TS = /^\d+\.\d+$/;
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
@@ -63,6 +65,32 @@ const boundedText = (value: unknown, name: string, maxChars: number): string => 
     return refuse(400, `${name} must be non-empty text`);
   if (value.length > maxChars) return refuse(400, `${name} holds at most ${maxChars} characters`);
   return value.trim();
+};
+
+const listedChannels = (url: URL): Set<string> => {
+  const listed = url.searchParams.get("channels");
+  if (listed === null || listed === "") return new Set();
+  const ids = listed.split(",");
+  if (ids.length > MAX_LISTED_CHANNELS)
+    return refuse(400, `channels holds at most ${MAX_LISTED_CHANNELS} ids`);
+  if (!ids.every((id) => SLACK_CHANNEL_ID.test(id)))
+    return refuse(400, "channels must be Slack channel ids");
+  return new Set(ids);
+};
+
+const channelReads = (value: unknown): ChannelRead[] => {
+  const { channels } = record(value);
+  if (!Array.isArray(channels)) return refuse(400, "channels must be a list");
+  if (channels.length > MAX_LISTED_CHANNELS)
+    return refuse(400, `channels holds at most ${MAX_LISTED_CHANNELS} entries`);
+  return channels.map((entry) => {
+    const { channelId, throughTs } = record(entry);
+    if (typeof channelId !== "string" || !SLACK_CHANNEL_ID.test(channelId))
+      return refuse(400, "channelId must be a Slack channel id");
+    if (typeof throughTs !== "string" || !SLACK_TS.test(throughTs))
+      return refuse(400, "throughTs must be a Slack message timestamp");
+    return { channelId, throughTs };
+  });
 };
 
 const readBody = async (incoming: IncomingMessage): Promise<unknown> => {
@@ -123,16 +151,36 @@ const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): 
     {
       method: "GET",
       pattern: /^\/api\/state$/,
-      handle: async () => ({
-        status: 200,
-        body: {
-          cards: store.cards(),
-          sync: store.syncState(),
-          lookup: store.lookupState(),
-          news: store.latestNews(),
-          settings: { polish, notify },
-        },
-      }),
+      handle: async (_params, _body, url) => {
+        const openChannels = listedChannels(url);
+        return {
+          status: 200,
+          body: {
+            cards: store.cards(),
+            sync: store.syncState(),
+            lookup: store.lookupState(),
+            news: store.latestNews(),
+            otherMessages: store.otherMessages(openChannels),
+            settings: { polish, notify },
+          },
+        };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/channel-messages\/read$/,
+      handle: async (_params, body) => {
+        store.markChannelsRead(channelReads(await body()));
+        return { status: 204 };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/channel-messages\/read-all$/,
+      handle: async (_params, body) => {
+        store.markAllChannelsRead(channelReads(await body()));
+        return { status: 204 };
+      },
     },
     {
       method: "POST",
