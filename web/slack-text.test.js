@@ -25,6 +25,14 @@ test("shows people, channels and group mentions by name, keeping the id a click 
   );
 });
 
+test("shows a group mention as Slack search returns it without exposing a raw id", () => {
+  assert.deepEqual(slackTokens("Hey <@S01SJ0JKC2C>, look", nameOf), [
+    { kind: "text", text: "Hey " },
+    { kind: "special", text: "@group" },
+    { kind: "text", text: ", look" },
+  ]);
+});
+
 test("names an unknown person without exposing a raw id", () => {
   assert.deepEqual(slackTokens("<@U0ZED>", nameOf), [
     { kind: "mention", userId: "U0ZED", text: "@someone" },

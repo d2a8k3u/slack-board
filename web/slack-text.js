@@ -1,5 +1,5 @@
 const TOKEN_PATTERN =
-  /<@([UW][A-Z0-9]+)(?:\|([^>]+))?>|<#([CG][A-Z0-9]+)(?:\|([^>]*))?>|<!subteam\^[A-Z0-9]+(?:\|([^>]+))?>|<!(here|channel|everyone)(?:\|[^>]+)?>|<(https?:\/\/[^|>\s]+)\|([^>]+)>|<(https?:\/\/[^|>\s]+)>|https?:\/\/[^\s<>]+/g;
+  /<@([UW][A-Z0-9]+)(?:\|([^>]+))?>|<#([CG][A-Z0-9]+)(?:\|([^>]*))?>|<(?:!subteam\^|@)(S[A-Z0-9]+)(?:\|([^>]+))?>|<!(here|channel|everyone)(?:\|[^>]+)?>|<(https?:\/\/[^|>\s]+)\|([^>]+)>|<(https?:\/\/[^|>\s]+)>|https?:\/\/[^\s<>]+/g;
 const TRAILING_PUNCTUATION = /[.,;:!?)\]'"]+$/;
 const SLACK_ENTITY = /&(amp|lt|gt);/g;
 const SLACK_ENTITIES = { "&amp;": "&", "&lt;": "<", "&gt;": ">" };
@@ -21,6 +21,7 @@ function tokenOf(match, nameOf) {
     userLabel,
     channelId,
     channelLabel,
+    groupId,
     groupLabel,
     special,
     labelledUrl,
@@ -41,7 +42,7 @@ function tokenOf(match, nameOf) {
       token: { kind: "channel", channelId, text: `#${decodeEntities(channelLabel || "channel")}` },
       length: whole.length,
     };
-  if (groupLabel !== undefined || whole.startsWith("<!subteam"))
+  if (groupId !== undefined)
     return {
       token: { kind: "special", text: decodeEntities(groupLabel ?? "@group") },
       length: whole.length,
