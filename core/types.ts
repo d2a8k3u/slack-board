@@ -28,6 +28,28 @@ export type HistoryMessage = {
 
 export type CardMessage = HistoryMessage & { permalink: string };
 
+export type ChannelMessage = {
+  key: string;
+  channelId: string;
+  channelLabel: string;
+  ts: string;
+  authorName: string;
+  text: string;
+  permalink: string;
+};
+
+export type ChannelSummary = {
+  channelId: string;
+  label: string;
+  count: number;
+  latestTs: string;
+  messages: ChannelMessage[] | null;
+};
+
+export type OtherMessages = { total: number; isMissing: boolean; channels: ChannelSummary[] };
+
+export type ChannelRead = { channelId: string; throughTs: string };
+
 export type ConversationMessage = HistoryMessage & { isMine: boolean; startsNew: boolean };
 
 export type ActionTurn = {

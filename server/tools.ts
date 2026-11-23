@@ -30,6 +30,12 @@ const number = (args: Record<string, unknown>, name: string): number => {
   return value;
 };
 
+const flag = (args: Record<string, unknown>, name: string): boolean => {
+  const value = args[name];
+  if (typeof value !== "boolean") throw new ToolInputError(`${name} must be true or false`);
+  return value;
+};
+
 const hits = (args: Record<string, unknown>, name: string): SlackHit[] => {
   const value = args[name];
   if (!Array.isArray(value)) throw new ToolInputError(`${name} must be a list of Slack hits`);
@@ -131,18 +137,32 @@ export const TOOLS: ToolDefinition[] = [
       properties: {
         hits: { type: "array" },
         myHits: { type: "array" },
+        channelHits: { type: "array" },
+        hasMoreChannelHits: { type: "boolean" },
+        lookbackDays: { type: "number" },
         me: { type: "string" },
         syncedAt: { type: "string" },
       },
-      required: ["hits", "myHits", "me", "syncedAt"],
+      required: [
+        "hits",
+        "myHits",
+        "channelHits",
+        "hasMoreChannelHits",
+        "lookbackDays",
+        "me",
+        "syncedAt",
+      ],
     },
     run: (args, { store, projectKeys }) => {
       const news = store.ingest({
         hits: hits(args, "hits"),
         myHits: hits(args, "myHits"),
+        channelHits: hits(args, "channelHits"),
+        hasMoreChannelHits: flag(args, "hasMoreChannelHits"),
         me: text(args, "me"),
         projectKeys,
         syncedAt: new Date(text(args, "syncedAt")),
+        lookbackDays: number(args, "lookbackDays"),
       });
       return {
         cards: store.cards().length,

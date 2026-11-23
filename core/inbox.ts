@@ -49,7 +49,7 @@ export const compareTs = (left: string, right: string): number => {
   return leftFraction.localeCompare(rightFraction);
 };
 
-const isNewer = (ts: string, than: string | undefined): boolean =>
+export const isNewer = (ts: string, than: string | undefined): boolean =>
   than === undefined || compareTs(ts, than) > 0;
 
 const titleOf = (hit: SlackHit, me: string): string => {

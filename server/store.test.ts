@@ -43,8 +43,51 @@ const withStores = (body: (first: BoardStore, second: BoardStore) => void) => ()
   }
 };
 
+const LOOKBACK_DAYS = 7;
+const DAY_MS = 24 * 60 * 60_000;
+
+const channelHit = (overrides: Partial<SlackHit>): SlackHit =>
+  hit({
+    channelId: "C01",
+    channelLabel: "#backend",
+    kind: "channel",
+    participants: [],
+    author: { id: "U_BOB", name: "Bob" },
+    text: "Deploy is done",
+    ...overrides,
+  });
+
+const ingestChannels = (
+  store: BoardStore,
+  channelHits: SlackHit[],
+  {
+    hits = [],
+    myHits = [],
+    hasMore = false,
+    now = NOW,
+  }: { hits?: SlackHit[]; myHits?: SlackHit[]; hasMore?: boolean; now?: Date } = {},
+) =>
+  store.ingest({
+    hits,
+    myHits,
+    channelHits,
+    hasMoreChannelHits: hasMore,
+    me: ME,
+    projectKeys: PROJECTS,
+    syncedAt: now,
+    lookbackDays: LOOKBACK_DAYS,
+  });
+
 const ingest = (store: BoardStore, hits: SlackHit[], myHits: SlackHit[] = [], now = NOW) =>
-  store.ingest({ hits, myHits, me: ME, projectKeys: PROJECTS, syncedAt: now });
+  ingestChannels(store, [], { hits, myHits, now });
+
+const NO_CHANNEL_OPEN = new Set<string>();
+
+const otherTexts = (store: BoardStore, channelId = "C01"): string[] =>
+  store
+    .otherMessages(new Set([channelId]))
+    .channels.find((channel) => channel.channelId === channelId)
+    ?.messages?.map((message) => message.text) ?? [];
 
 const claimedCardKeys = (store: BoardStore): string[] => {
   const claimed = store.claim("worker", NOW);
@@ -690,5 +733,125 @@ test(
     ingest(store, [hit({ text: "no ticket" })]);
 
     assert.deepEqual(store.cards(), []);
+  }),
+);
+
+test(
+  "keeps messages from my channels across syncs, summed up per channel, with the messages of opened channels only",
+  withStores((store) => {
+    ingestChannels(store, [
+      channelHit({ ts: "1795000000.000100", text: "first" }),
+      channelHit({ ts: "1795000500.000000", text: "second" }),
+      channelHit({ channelId: "C02", channelLabel: "#ops", ts: "1795000600.000000", text: "ops" }),
+    ]);
+    ingestChannels(store, [], { now: LATER(60_000) });
+
+    const message = (ts: string, text: string) => ({
+      key: `C01:${ts}`,
+      channelId: "C01",
+      channelLabel: "#backend",
+      ts,
+      authorName: "Bob",
+      text,
+      permalink: "https://example.slack.com/archives/D01/p1795000000000100",
+    });
+    assert.deepEqual(store.otherMessages(new Set(["C01"])), {
+      total: 3,
+      isMissing: false,
+      channels: [
+        {
+          channelId: "C02",
+          label: "#ops",
+          count: 1,
+          latestTs: "1795000600.000000",
+          messages: null,
+        },
+        {
+          channelId: "C01",
+          label: "#backend",
+          count: 2,
+          latestTs: "1795000500.000000",
+          messages: [message("1795000000.000100", "first"), message("1795000500.000000", "second")],
+        },
+      ],
+    });
+
+    const firstOutOfLookback = new Date(1795000001 * 1000 + LOOKBACK_DAYS * DAY_MS);
+    ingestChannels(store, [], { now: firstOutOfLookback });
+    assert.deepEqual(otherTexts(store), ["second"]);
+  }),
+);
+
+test(
+  "marks a channel read up to the newest message shown, so later ones stay and the next sync brings no read one back",
+  withStores((store) => {
+    const shown = [
+      channelHit({ ts: "1795000100.000000", text: "first" }),
+      channelHit({ ts: "1795000200.000000", text: "second" }),
+    ];
+    const later = channelHit({ ts: "1795000300.000000", text: "came while reading" });
+    const ops = channelHit({ channelId: "C02", channelLabel: "#ops", ts: "1795000150.000000" });
+    ingestChannels(store, [...shown, ops]);
+    ingestChannels(store, [...shown, later, ops], { now: LATER(60_000) });
+
+    store.markChannelsRead([{ channelId: "C01", throughTs: "1795000200.000000" }]);
+    store.markChannelsRead([{ channelId: "C01", throughTs: "1795000100.000000" }]);
+    ingestChannels(store, [...shown, later, ops], { now: LATER(120_000) });
+
+    assert.deepEqual(otherTexts(store), ["came while reading"]);
+    assert.equal(store.otherMessages(NO_CHANNEL_OPEN).total, 2);
+  }),
+);
+
+test(
+  "never shows a channel message that is on a card, was ignored there, or that I answered in its thread",
+  withStores((store) => {
+    const mention = channelHit({ ts: "1795000100.000000", text: `<@${ME}> look` });
+    const answered = channelHit({ ts: "1795000200.000000", text: "answered" });
+    const plain = channelHit({ ts: "1795000300.000000", text: "plain" });
+    const myReply = channelHit({
+      ts: "1795000250.000000",
+      threadTs: "1795000200.000000",
+      author: { id: ME, name: "Me" },
+    });
+    const channelHits = [mention, answered, plain];
+    ingestChannels(store, channelHits, { hits: [mention], myHits: [myReply] });
+    assert.deepEqual(otherTexts(store), ["plain"]);
+
+    store.ignore("C01:1795000100.000000", NOW);
+    ingestChannels(store, channelHits, { hits: [mention], myHits: [myReply], now: LATER(60_000) });
+    assert.deepEqual(otherTexts(store), ["plain"]);
+
+    const askedInThread = channelHit({
+      ts: "1795000350.000000",
+      threadTs: "1795000300.000000",
+      text: `<@${ME}> and you?`,
+    });
+    ingestChannels(store, [], { hits: [askedInThread], now: LATER(120_000) });
+    assert.deepEqual(otherTexts(store), []);
+  }),
+);
+
+test(
+  "says messages are missing after a sync found more than it loads, until all are marked read or the lookback passes",
+  withStores((store) => {
+    const backend = channelHit({ ts: "1795000100.000000" });
+    const ops = channelHit({ channelId: "C02", channelLabel: "#ops", ts: "1795000200.000000" });
+    ingestChannels(store, [backend, ops], { hasMore: true });
+    ingestChannels(store, [], { now: LATER(60_000) });
+    store.markChannelsRead([{ channelId: "C01", throughTs: backend.ts }]);
+    assert.equal(store.otherMessages(NO_CHANNEL_OPEN).isMissing, true);
+
+    store.markAllChannelsRead([{ channelId: "C02", throughTs: ops.ts }]);
+    assert.deepEqual(store.otherMessages(NO_CHANNEL_OPEN), {
+      total: 0,
+      isMissing: false,
+      channels: [],
+    });
+
+    ingestChannels(store, [], { hasMore: true, now: LATER(120_000) });
+    const truncatedSyncOutOfLookback = new Date(LATER(121_000).getTime() + LOOKBACK_DAYS * DAY_MS);
+    ingestChannels(store, [], { now: truncatedSyncOutOfLookback });
+    assert.equal(store.otherMessages(NO_CHANNEL_OPEN).isMissing, false);
   }),
 );
