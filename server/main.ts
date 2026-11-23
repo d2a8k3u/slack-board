@@ -55,7 +55,7 @@ http.on("error", (error: NodeJS.ErrnoException) => {
 listen();
 
 serveStdio({
-  info: { name: "slack-board", version: "0.4.0" },
+  info: { name: "slack-board", version: "0.4.1" },
   tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
   callTool: (name, args) => runTool(name, args, { store, projectKeys, boardUrl }),
 });

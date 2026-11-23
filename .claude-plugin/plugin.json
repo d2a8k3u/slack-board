@@ -1,6 +1,6 @@
 {
   "name": "slack-board",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Board of Slack messages for you: drafts replies in your tone of voice and sends them after your approval",
   "author": {
     "name": "David Kulhanek"
