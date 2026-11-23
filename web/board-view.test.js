@@ -32,6 +32,7 @@ function card(key, overrides = {}) {
     messages,
     tickets: [],
     proposal: null,
+    actionProposal: null,
     pending: null,
     error: null,
     priority: null,
@@ -126,6 +127,14 @@ test("shows a card whose prompt Claude is working on as working, not as drafting
   const working = card("Ana Novak", { pending: { kind: "act", status: "working" } });
 
   assert.deepEqual(sectionsOf(groupCards([working], "status")), [["Working", ["Ana Novak"]]]);
+});
+
+test("shows a card whose steps wait for approval in Actions as a proposal ready", () => {
+  const waiting = card("Ana Novak", { actionProposal: { turn: 1, isRunning: false } });
+
+  assert.deepEqual(sectionsOf(groupCards([waiting], "status")), [
+    ["Proposal ready", ["Ana Novak"]],
+  ]);
 });
 
 test("gives every section a key that stays the same while its cards change, so a collapsed section stays collapsed", () => {
@@ -264,26 +273,53 @@ test("splits text into marked and plain parts, merging ranges that touch or over
 
 test("tells what happened to each card between two board states", () => {
   const base = { error: null, proposal: null, pending: null, actions: [] };
+  const prompt = { author: "me", text: "Comment on PROJ-1", isFailed: false };
+  const answer = { author: "claude", text: "PROJ-1", isFailed: false };
   const sending = card("SENT", { ...base, pending: { kind: "execute", status: "working" } });
   const drafting = card("DRAFT", { ...base, pending: { kind: "propose", status: "working" } });
   const asking = card("ASK", { ...base, pending: { kind: "act", status: "working" } });
   const quiet = card("QUIET", base);
   const failing = card("FAIL", { ...base, pending: { kind: "propose", status: "working" } });
-  const before = [sending, drafting, asking, quiet, failing];
+  const proposing = card("STEPS", {
+    ...base,
+    pending: { kind: "act", status: "working" },
+    actions: [prompt],
+  });
+  const running = card("RUN", {
+    ...base,
+    pending: { kind: "execute", status: "working" },
+    actions: [prompt, answer],
+    actionProposal: { turn: 1, isRunning: true },
+  });
+  const before = [sending, drafting, asking, quiet, failing, proposing, running];
   const after = [
     { ...drafting, pending: null, proposal: { summary: "Reply", steps: [] } },
-    { ...asking, pending: null, actions: [{ author: "claude", text: "PROJ-1", isFailed: false }] },
+    { ...asking, pending: null, actions: [answer] },
     quiet,
     { ...failing, pending: null, error: "No reply" },
+    { ...proposing, pending: null, actions: [prompt, answer], actionProposal: { turn: 1 } },
+    {
+      ...running,
+      pending: null,
+      actions: [prompt, answer, { author: "claude", text: "Step 1 failed", isFailed: true }],
+      actionProposal: { turn: 1, isRunning: false },
+    },
   ];
 
   assert.deepEqual(
-    cardChanges(before, after).map((change) => [change.kind, change.card.key, change.work]),
+    cardChanges(before, after).map((change) => [
+      change.kind,
+      change.card.key,
+      change.work,
+      change.error,
+    ]),
     [
-      ["sent", "SENT", undefined],
-      ["proposal", "DRAFT", undefined],
-      ["answered", "ASK", undefined],
-      ["failed", "FAIL", "propose"],
+      ["sent", "SENT", undefined, undefined],
+      ["proposal", "DRAFT", undefined, undefined],
+      ["answered", "ASK", undefined, undefined],
+      ["failed", "FAIL", "propose", "No reply"],
+      ["proposal", "STEPS", undefined, undefined],
+      ["failed", "RUN", "execute", "Step 1 failed"],
     ],
   );
 });
@@ -300,6 +336,12 @@ test("spins the button that started the card's work, and guesses from the work w
     [{ pending: pending("propose"), proposal: null }, false, undefined, "draft"],
     [{ pending: pending("execute"), proposal: { steps: [] } }, false, undefined, "approve"],
     [{ pending: pending("execute"), proposal: null }, false, undefined, "send"],
+    [
+      { pending: pending("execute"), proposal: { steps: [] }, actionProposal: { isRunning: true } },
+      false,
+      undefined,
+      "approveSteps",
+    ],
   ];
   for (const [card, isRequestInFlight, started, expected] of cases)
     assert.equal(spinningControl(card, isRequestInFlight, started), expected);

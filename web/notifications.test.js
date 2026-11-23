@@ -101,12 +101,17 @@ test("tells about Claude's finished work and a failed send, under the setting ea
       ["claudeDone", "Claude could not finish your prompt: Timed out"],
     ],
     [
-      { kind: "failed", work: "propose", card: card({ error: "No reply" }) },
+      { kind: "failed", work: "propose", error: "No reply", card: card({ error: "No reply" }) },
       ["claudeDone", "Claude could not draft: No reply"],
     ],
     [
-      { kind: "failed", work: "execute", card: card({ error: "channel_not_found" }) },
-      ["sendFailed", "Not sent: channel_not_found"],
+      {
+        kind: "failed",
+        work: "execute",
+        error: "Step 1 failed: channel_not_found",
+        card: card({}),
+      },
+      ["sendFailed", "Not sent: Step 1 failed: channel_not_found"],
     ],
     [{ kind: "sent", card: card({}) }, null],
   ];

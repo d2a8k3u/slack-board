@@ -93,6 +93,10 @@ const EMPTY_COMPOSER_MESSAGE = "Write a reply, an emoji or an instruction first.
 const EMPTY_ACTION_MESSAGE = "Write a prompt first.";
 const ACTIONS_INTRO =
   "Write a prompt the way you would in Claude Code. Claude works on it with this conversation and answers here.";
+const RUNNING_STEPS_WORK = {
+  title: "Sending.",
+  text: " Claude is running the steps you approved.",
+};
 const HISTORY_ERROR_PREFIX = "Earlier messages could not be loaded from Slack: ";
 const EMPTY_THREAD_MESSAGE = "Write your reply first.";
 const NO_OTHER_MESSAGES = { total: 0, isMissing: false, channels: [] };
@@ -308,6 +312,7 @@ const memory = {
   threadDrafts: new Map(),
   notes: new Map(),
   edits: new Map(),
+  actionEdits: new Map(),
   started: new Map(),
   opened: readOpened(),
 };
@@ -745,27 +750,27 @@ function personOptions() {
   );
 }
 
-function editsFor(card) {
-  const signature = JSON.stringify(card.proposal);
-  const current = memory.edits.get(card.key);
+function editsFor(edits, key, proposal) {
+  const signature = JSON.stringify(proposal);
+  const current = edits.get(key);
   if (current?.signature === signature) return current.texts;
   const texts = new Map();
-  memory.edits.set(card.key, { signature, texts });
+  edits.set(key, { signature, texts });
   return texts;
 }
 
-function editedProposal(card) {
-  const texts = editsFor(card);
+function editedProposal(edits, key, proposal) {
+  const texts = editsFor(edits, key, proposal);
   return {
-    ...card.proposal,
-    steps: card.proposal.steps.map((step, index) =>
+    ...proposal,
+    steps: proposal.steps.map((step, index) =>
       step.type === "slack_reply" ? { ...step, text: texts.get(index) ?? step.text } : step,
     ),
   };
 }
 
-function replyPlaceLabel(card) {
-  if (card.proposal?.replyToTs || card.target.threadTs !== null) return "Reply in the thread";
+function replyPlaceLabel(card, proposal) {
+  if (proposal?.replyToTs || card.target.threadTs !== null) return "Reply in the thread";
   if (card.kind === "dm" || card.kind === "group") return "Reply in the DM";
   if (card.kind === "compose") return `Message to ${card.title}`;
   return "Reply in the thread";
@@ -924,14 +929,13 @@ function applyState(state) {
 }
 
 const ANNOUNCEMENTS = {
-  sent: (card) => `Sent: ${card.title}`,
-  failed: (card) => `Failed: ${card.title}. ${card.error}`,
-  proposal: (card) => `Proposal ready: ${card.title}`,
-  answered: (card) => `Claude answered: ${card.title}`,
+  sent: ({ card }) => `Sent: ${card.title}`,
+  failed: ({ card, error }) => `Failed: ${card.title}. ${error}`,
+  proposal: ({ card }) => `Proposal ready: ${card.title}`,
+  answered: ({ card }) => `Claude answered: ${card.title}`,
 };
 
-const announcementsOf = (changes) =>
-  changes.map((change) => ANNOUNCEMENTS[change.kind](change.card));
+const announcementsOf = (changes) => changes.map((change) => ANNOUNCEMENTS[change.kind](change));
 
 function noticesOf(state, changes) {
   const isAllowed = (notice) => state.notify[notice.event];
@@ -1065,6 +1069,7 @@ function forgetMissingCards() {
     memory.actionDrafts,
     memory.notes,
     memory.edits,
+    memory.actionEdits,
     memory.started,
   ];
   for (const store of cardStores) {
@@ -1195,10 +1200,7 @@ async function runPrompt(key) {
   startWork(key, CONTROLS.run, "act", scope);
   const result = await runAction(scope, () => api("POST", `${cardPath(key)}/act`, { text }), {
     conflictMessage: BUSY_MESSAGE,
-    onSuccess: () => {
-      memory.notes.delete(key);
-      announce(["Claude is working on your prompt"]);
-    },
+    onSuccess: () => announce(["Claude is working on your prompt"]),
   });
   if (!result.ok) return;
   memory.actionDrafts.delete(key);
@@ -1228,14 +1230,45 @@ function approve(key) {
   const scope = scopeOf("proposal", key);
   if (card.pending !== null) return rejectSubmit(scope, BUSY_MESSAGE, null);
   startWork(key, CONTROLS.approve, "execute", scope);
+  const proposal = editedProposal(memory.edits, key, card.proposal);
+  void runAction(scope, () => api("POST", `${cardPath(key)}/approve`, { proposal }), {
+    conflictMessage: BUSY_MESSAGE,
+    onSuccess: () => announce(["Approved. Sending."]),
+  });
+}
+
+function approveSteps(key) {
+  const card = findCard(key);
+  const waiting = card?.actionProposal;
+  if (waiting === null || waiting === undefined) return;
+  const scope = scopeOf("steps", key);
+  if (card.pending !== null) return rejectSubmit(scope, BUSY_MESSAGE, null);
+  startWork(key, CONTROLS.approveSteps, "execute", scope);
+  const proposal = editedProposal(memory.actionEdits, key, waiting.proposal);
   void runAction(
     scope,
-    () => api("POST", `${cardPath(key)}/approve`, { proposal: editedProposal(card) }),
+    () => api("POST", `${cardPath(key)}/turns/${waiting.turn}/approve`, { proposal }),
     {
       conflictMessage: BUSY_MESSAGE,
       onSuccess: () => announce(["Approved. Sending."]),
     },
   );
+}
+
+function discardSteps(key) {
+  const card = findCard(key);
+  const waiting = card?.actionProposal;
+  if (waiting === null || waiting === undefined) return;
+  const scope = scopeOf("steps", key);
+  if (card.pending !== null) return rejectSubmit(scope, BUSY_MESSAGE, null);
+  startWork(key, CONTROLS.discardSteps, null, scope);
+  void runAction(scope, () => api("POST", `${cardPath(key)}/turns/${waiting.turn}/discard`), {
+    conflictMessage: BUSY_MESSAGE,
+    onSuccess: () => {
+      memory.actionEdits.delete(key);
+      announce(["Steps discarded"]);
+    },
+  });
 }
 
 function discard(key) {
@@ -1293,7 +1326,7 @@ function openCard(key, focusTarget = "heading") {
   ui.filtersOpen = false;
   ui.openKey = key;
   ui.selectedKey = key;
-  ui.actionsOpen = false;
+  ui.actionsOpen = card.actionProposal !== null;
   ui.replyToTs = null;
   detail = buildDetail(card);
   dom.detailDialog.replaceChildren(detail.root);
@@ -1328,13 +1361,6 @@ function toggleActions() {
   ui.actionsOpen = !ui.actionsOpen;
   render();
   if (ui.actionsOpen) detail.actionField.focus();
-}
-
-function focusProposal() {
-  const approve = detail?.proposalControls?.approve;
-  if (approve === undefined) return;
-  approve.scrollIntoView({ block: "center" });
-  approve.focus();
 }
 
 function toggleReply(ts) {
@@ -2129,12 +2155,7 @@ function buildActions(key, refs) {
     "aria-label": "Prompts and answers",
     tabindex: "0",
   });
-  refs.actionWorking = el(
-    "p",
-    { class: "action-working", role: "status", hidden: true },
-    el("span", { class: "sb-dot working-dot", "aria-hidden": "true" }),
-    el("span", {}, el("strong", { text: "Claude is working." }), " The answer shows up here."),
-  );
+  refs.actionWorking = el("p", { class: "action-working", role: "status", hidden: true });
   refs.actionIntro = el("p", { class: "action-intro", text: ACTIONS_INTRO });
   refs.actionField = el("textarea", {
     id: "action-note",
@@ -2338,31 +2359,81 @@ function scrollToEnd(list) {
   list.scrollTop = list.scrollHeight;
 }
 
+function actionWork(card) {
+  if (card.pending?.kind === "act")
+    return { title: "Claude is working.", text: " The answer shows up here." };
+  if (card.actionProposal?.isRunning === true) return RUNNING_STEPS_WORK;
+  return null;
+}
+
 function updateActions(refs, card) {
   const turnsAtEnd = isScrolledToEnd(refs.actionTurns);
   refs.actionsToggle.setAttribute("aria-expanded", String(ui.actionsOpen));
   refs.actionsBody.hidden = !ui.actionsOpen;
   setText(refs.actionCount, String(card.actions.length));
-  refs.actionWorking.hidden = card.pending?.kind !== "act";
+  const work = actionWork(card);
+  refs.actionWorking.hidden = work === null;
+  syncSection(refs.actionWorking, JSON.stringify(work), () => workNodes(work));
   refs.actionIntro.hidden = card.actions.length > 0;
   refs.actionTurns.hidden = card.actions.length === 0;
   const ticketKeys = boardTicketKeys();
+  const waiting = card.actionProposal;
   syncSection(
     refs.actionTurns,
-    JSON.stringify([card.actions, card.proposal?.steps.length ?? 0, ticketKeys]),
-    () => turnNodes(card, ticketKeys),
+    JSON.stringify([
+      card.actions,
+      waiting?.turn,
+      waiting?.proposal,
+      waiting?.approveCloses,
+      replyPlaceLabel(card, waiting?.proposal),
+      ticketKeys,
+    ]),
+    () => turnNodes(card, ticketKeys, refs),
   );
   if (turnsAtEnd) scrollToEnd(refs.actionTurns);
   const scope = scopeOf("action", card.key);
   setDisabled(refs.actionSubmit, card.pending !== null || requests.inFlight.has(scope));
   setBusy(refs.actionSubmit, spinningControlOf(card) === CONTROLS.run);
   setText(refs.actionError, requests.errors.get(scope) ?? "");
+  updateApprovalControls(refs.stepsControls, card, scopeOf("steps", card.key), {
+    approve: CONTROLS.approveSteps,
+    discard: CONTROLS.discardSteps,
+  });
 }
 
-function turnNodes(card, ticketKeys) {
+function stepsNode(card, refs) {
+  const waiting = card.actionProposal;
+  const parts = approvalParts(waiting.proposal, waiting.approveCloses, {
+    texts: editsFor(memory.actionEdits, card.key, waiting.proposal),
+    replyLabel: replyPlaceLabel(card, waiting.proposal),
+    idPrefix: "actions",
+    onApprove: () => approveSteps(card.key),
+    onDiscard: () => discardSteps(card.key),
+  });
+  refs.stepsControls = parts.controls;
+  return el(
+    "div",
+    { class: "turn-proposal", role: "group", "aria-labelledby": "turn-proposal-label" },
+    el(
+      "div",
+      {},
+      el("p", {
+        id: "turn-proposal-label",
+        class: "turn-proposal-label",
+        text: "Steps to approve",
+      }),
+      el("p", { class: "proposal-summary", text: waiting.proposal.summary }),
+    ),
+    parts.steps,
+    el("div", { class: "turn-proposal-actions" }, ...parts.buttons, parts.hint),
+    parts.error,
+  );
+}
+
+function turnNodes(card, ticketKeys, refs) {
   const pattern = ticketPattern(ticketKeys);
-  const answered = card.actions.findLastIndex((turn) => turn.author === "claude" && !turn.isFailed);
-  const waitingSteps = card.proposal?.steps.length ?? 0;
+  const stepsTurn = card.actionProposal?.turn ?? null;
+  refs.stepsControls = null;
   return card.actions.map((turn, index) => {
     const text = el(
       "p",
@@ -2387,13 +2458,7 @@ function turnNodes(card, ticketKeys) {
         turn.tools.length === 0
           ? null
           : el("p", { class: "turn-tools", text: `Looked at ${turn.tools.join(", ")}` }),
-        index === answered && waitingSteps > 0
-          ? el(
-              "button",
-              { type: "button", class: "turn-steps", onclick: focusProposal },
-              `${waitingSteps} ${waitingSteps === 1 ? "step waits" : "steps wait"} for your approval`,
-            )
-          : null,
+        index === stepsTurn ? stepsNode(card, refs) : null,
         el("p", { class: "turn-meta" }, turn.isFailed ? "Failed · " : "Claude · ", at),
       ),
     );
@@ -2746,14 +2811,15 @@ function updateCardState(refs, card) {
   const note = memory.notes.get(card.key);
   const working = workingMessage(card, note);
   refs.working.hidden = working === null;
-  syncSection(refs.working, JSON.stringify(working), () =>
-    working === null
-      ? []
-      : [
-          el("span", { class: "sb-dot working-dot", "aria-hidden": "true" }),
-          el("span", {}, el("strong", { text: working.title }), working.text),
-        ],
-  );
+  syncSection(refs.working, JSON.stringify(working), () => workNodes(working));
+}
+
+function workNodes(work) {
+  if (work === null) return [];
+  return [
+    el("span", { class: "sb-dot working-dot", "aria-hidden": "true" }),
+    el("span", {}, el("strong", { text: work.title }), work.text),
+  ];
 }
 
 function workingMessage(card, note) {
@@ -2763,12 +2829,24 @@ function workingMessage(card, note) {
       title: "Claude is drafting.",
       text: note === undefined ? "" : ` Your note: “${note}”`,
     };
-  if (pendingKind === "execute")
-    return {
-      title: "Sending.",
-      text: card.proposal === null ? "" : " Claude is running the steps you approved.",
-    };
+  if (pendingKind === "execute" && card.actionProposal?.isRunning !== true)
+    return card.proposal === null ? { title: "Sending.", text: "" } : RUNNING_STEPS_WORK;
   return null;
+}
+
+function updateApprovalControls(controls, card, scope, controlNames) {
+  if (controls === null || controls === undefined) return;
+  const busy = card.pending !== null || requests.inFlight.has(scope);
+  setDisabled(controls.approve, busy);
+  setDisabled(controls.discard, busy);
+  spinOnly(
+    new Map([
+      [controlNames.approve, controls.approve],
+      [controlNames.discard, controls.discard],
+    ]),
+    spinningControlOf(card),
+  );
+  setText(controls.error, requests.errors.get(scope) ?? "");
 }
 
 function updateProposal(refs, card) {
@@ -2781,48 +2859,67 @@ function updateProposal(refs, card) {
   const note = memory.notes.get(card.key) ?? null;
   syncSection(
     refs.proposal,
-    JSON.stringify([card.proposal, card.approveCloses, note, replyPlaceLabel(card)]),
+    JSON.stringify([card.proposal, card.approveCloses, note, replyPlaceLabel(card, card.proposal)]),
     () => proposalNodes(card, note, refs),
   );
-  if (refs.proposalControls === null || refs.proposalControls === undefined) return;
-  const scope = scopeOf("proposal", card.key);
-  const busy = card.pending !== null || requests.inFlight.has(scope);
-  setDisabled(refs.proposalControls.approve, busy);
-  setDisabled(refs.proposalControls.discard, busy);
-  spinOnly(
-    new Map([
-      [CONTROLS.approve, refs.proposalControls.approve],
-      [CONTROLS.discard, refs.proposalControls.discard],
-    ]),
-    spinningControlOf(card),
-  );
-  setText(refs.proposalControls.error, requests.errors.get(scope) ?? "");
+  updateApprovalControls(refs.proposalControls, card, scopeOf("proposal", card.key), {
+    approve: CONTROLS.approve,
+    discard: CONTROLS.discard,
+  });
 }
 
-function proposalNodes(card, note, refs) {
-  const texts = editsFor(card);
+function approvalParts(
+  proposal,
+  approveCloses,
+  { texts, replyLabel, idPrefix, onApprove, onDiscard },
+) {
   const approveButton = el(
     "button",
     {
       type: "button",
       class: "sb-btn button button-accent approve-button",
-      onclick: (event) => !isDisabled(event.currentTarget) && approve(card.key),
+      onclick: (event) => !isDisabled(event.currentTarget) && onApprove(),
     },
     icon("check"),
-    card.approveCloses ? "Approve and send" : "Approve and run",
+    approveCloses ? "Approve and send" : "Approve and run",
   );
   const discardButton = el(
     "button",
     {
       type: "button",
       class: "button button-quiet discard-button",
-      onclick: (event) => !isDisabled(event.currentTarget) && discard(card.key),
+      onclick: (event) => !isDisabled(event.currentTarget) && onDiscard(),
     },
     "Discard",
   );
   const error = errorLine();
-  refs.proposalControls = { approve: approveButton, discard: discardButton, error };
-  const label = replyPlaceLabel(card);
+  return {
+    controls: { approve: approveButton, discard: discardButton, error },
+    steps: el(
+      "ol",
+      { class: "steps" },
+      ...proposal.steps.map((step, index) => stepItem(step, index, texts, replyLabel, idPrefix)),
+    ),
+    buttons: [approveButton, discardButton],
+    hint: el("span", {
+      class: "hint proposal-reassure",
+      text: approveCloses
+        ? "Nothing is sent until you approve."
+        : "Nothing runs until you approve. No reply goes out, so the card stays open.",
+    }),
+    error,
+  };
+}
+
+function proposalNodes(card, note, refs) {
+  const parts = approvalParts(card.proposal, card.approveCloses, {
+    texts: editsFor(memory.edits, card.key, card.proposal),
+    replyLabel: replyPlaceLabel(card, card.proposal),
+    idPrefix: "proposal",
+    onApprove: () => approve(card.key),
+    onDiscard: () => discard(card.key),
+  });
+  refs.proposalControls = parts.controls;
   return [
     note === null
       ? null
@@ -2841,34 +2938,24 @@ function proposalNodes(card, note, refs) {
         el("h3", { id: "proposal-heading", class: "proposal-title", text: "Claude's proposal" }),
         el("p", { class: "proposal-summary", text: card.proposal.summary }),
       ),
-      el(
-        "ol",
-        { class: "steps" },
-        ...card.proposal.steps.map((step, index) => stepItem(step, index, texts, label)),
-      ),
+      parts.steps,
       el(
         "div",
         { class: "proposal-actions" },
-        approveButton,
-        discardButton,
+        ...parts.buttons,
         el(
           "button",
           { type: "button", class: "button button-quiet new-note-button", onclick: focusComposer },
           "Write a new note",
         ),
-        el("span", {
-          class: "hint proposal-reassure",
-          text: card.approveCloses
-            ? "Nothing is sent until you approve."
-            : "Nothing runs until you approve. No reply goes out, so the card stays open.",
-        }),
+        parts.hint,
       ),
-      error,
+      parts.error,
     ),
   ].filter((node) => node !== null);
 }
 
-function stepItem(step, index, texts, replyLabel) {
+function stepItem(step, index, texts, replyLabel, idPrefix) {
   const isReply = step.type === "slack_reply";
   return el(
     "li",
@@ -2878,7 +2965,7 @@ function stepItem(step, index, texts, replyLabel) {
       "aria-hidden": "true",
       text: String(index + 1),
     }),
-    el("div", { class: "step-content" }, ...stepContent(step, index, texts, replyLabel)),
+    el("div", { class: "step-content" }, ...stepContent(step, index, texts, replyLabel, idPrefix)),
   );
 }
 
@@ -2886,10 +2973,10 @@ const issueChip = (issueKey) => el("span", { class: "key-chip", text: issueKey }
 const connectorToolName = (tool) => tool.split("__").slice(2).join("__") || tool;
 const stepTitle = (...parts) => el("p", { class: "step-title" }, ...parts);
 
-function stepContent(step, index, texts, replyLabel) {
+function stepContent(step, index, texts, replyLabel, idPrefix) {
   switch (step.type) {
     case "slack_reply": {
-      const fieldId = `reply-step-${index}`;
+      const fieldId = `${idPrefix}-reply-step-${index}`;
       const field = el("textarea", {
         id: fieldId,
         class: "textarea",

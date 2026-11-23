@@ -1575,21 +1575,19 @@
     color: var(--muted);
     overflow-wrap: anywhere;
   }
-  .turn-steps {
-    align-self: flex-start;
-    min-height: 32px;
-    padding: 0 12px;
-    border: 0;
-    border-radius: 999px;
-    background: var(--danger-bg);
-    color: var(--danger-fg);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
+  .turn-proposal {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
   }
-  .turn-steps:focus-visible {
-    outline: 3px solid var(--focus);
-    outline-offset: 2px;
+  .turn-proposal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
   }
   .action-working {
     margin: 0;
@@ -2046,7 +2044,8 @@
     flex-direction: column;
     gap: 4px;
   }
-  .proposal-note-label {
+  .proposal-note-label,
+  .turn-proposal-label {
     margin: 0;
     font-size: 12px;
     font-weight: 600;
