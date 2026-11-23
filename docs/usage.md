@@ -57,6 +57,21 @@ With `polish_replies` turned off in the [settings](settings.md), Draft and Send 
 
 Click any message in the conversation, yours included. A box opens under it: press Draft thread reply to have Claude write it, or Send as written to send your text as it is. The reply goes into that message's thread, and a reaction goes on that message.
 
+## Mention people and channels
+
+Type `@` at the start of a word to mention someone, or `#` to link a channel. This works in the reply box of any card, a new message included, in a thread reply box and in the reply text of a proposal. A list opens and narrows as you type:
+
+- `@` lists the people in this conversation first, then people from your other conversations and earlier searches, then what a Slack search finds. On a channel card it also offers `@here`, `@channel` and `@everyone`.
+- `#` lists channels from your conversations and earlier searches, then what a Slack search finds.
+
+The arrow keys move through the list, Enter or Tab picks an entry, and Esc closes the list and keeps what you typed. When nothing matches, the list closes.
+
+A picked entry shows as `@Name` or `#channel`, and the line under the box says who your text notifies and which channels it links. Change or delete any part of an entry and it becomes plain text. Text you type without picking it from the list stays plain text: it notifies nobody and links nothing.
+
+Send as written delivers each entry as a Slack mention or channel link. With Draft, Claude keeps every mention and channel link from your note and adds none of its own, so the proposal shows exactly who will be notified before you approve. If Claude's draft changes them, the card shows an error: draft again or send your note as written. A note you have not sent keeps its entries when you come back to the card.
+
+Prompts in Actions have no list. User groups such as `@backend` are not offered: Slack gives the board a group's ID but not its name.
+
 ## Ask Claude about a conversation
 
 Open Actions at the top of the card and write a prompt the way you would in Claude Code, for example "find the ticket related to the one in this message" or "move PROJ-123 to review and comment that the fix is on staging". Press Run or Ctrl+Enter.
