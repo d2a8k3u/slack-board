@@ -18,7 +18,8 @@ The small talk at the bottom can wait until lunch.
 
 ## What it does
 
-- Collects DMs, group DMs, @mentions and replies in your threads every 5 minutes while Claude Code is open. One conversation is one card; answer it in Slack and the card goes away.
+- Collects DMs, group DMs, @mentions, `@here`, `@channel`, `@everyone` and replies in your threads every 5 minutes while Claude Code is open. One conversation is one card; answer it in Slack and the card goes away.
+- Keeps everything else posted in your channels in Other messages at the end of the board, grouped by channel, until you mark it read.
 - Ranks cards by what they need from you: Decision, Action, Info or Small talk.
 - Shows status, assignee and priority of every Jira ticket a message mentions. Claude summarises a ticket only when you ask.
 - Shows the whole conversation from Slack, your own messages included, and marks where the messages waiting for you start.

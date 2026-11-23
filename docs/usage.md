@@ -4,7 +4,7 @@ Run `/board` in Claude Code. The board opens in your browser at `http://127.0.0.
 
 ## Read what is waiting
 
-Each card is one conversation: a DM, a group DM, a thread, or a channel message that mentions you. The badge says what it needs from you:
+Each card is one conversation: a DM, a group DM, a thread, or a channel message that mentions you or uses `@here`, `@channel` or `@everyone`. The badge says what it needs from you:
 
 | Badge | Meaning |
 | --- | --- |
@@ -26,6 +26,16 @@ A red dot marks a card with messages you have not opened yet.
 A card leaves the board when you answer in Slack, when a reply or reaction you approved goes out, or when you press Ignore (the × on the card or the button in the opened card). Steps that only change tickets or other tools keep the card open. An ignored conversation comes back only when someone writes in it again.
 
 A mention in a message shows the person's name. Click it to start a new message to them.
+
+## Other messages
+
+Other messages, below all cards, collects what people and bots post in the public and private channels you are a member of and that no card holds. Thread replies stay out; you see what Slack's channel view shows. The section is collapsed when the board opens, and its header shows how many messages it holds. It is hidden while it is empty.
+
+Open it to see one row per channel with the number of messages and the time of the latest. Open a channel to read its messages; Open in Slack goes to each one. Mark read on a channel removes its messages from the board, and Mark all read empties the section. Neither changes anything in Slack, and a message you read in Slack stays here until you mark it read on the board. A message older than `lookback_days` leaves the section on its own.
+
+When Slack has more messages since the previous sync than the board loads, the section says that some are missing. The note stays until you press Mark all read, or for `lookback_days`.
+
+These messages get no priority, drafts, Actions or notifications, and search and filters cover only cards. Messages that bots post as blocks show no text on the board; open them in Slack.
 
 ## Read the conversation
 
