@@ -5,8 +5,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createBoardServer } from "./http.ts";
-import { BoardStore } from "./store.ts";
+import type { SlackHit } from "../core/types.ts";
+import { createBoardServer, MAX_LISTED_CHANNELS } from "./http.ts";
+import { BoardStore, type SyncInput } from "./store.ts";
 
 type Reply = { status: number; body: string };
 
@@ -103,35 +104,43 @@ test(
       "sync",
       "lookup",
       "news",
+      "otherMessages",
       "settings",
     ]);
   }),
 );
 
-const seedCard = (store: BoardStore) =>
+const sync = (store: BoardStore, input: Partial<SyncInput>) =>
   store.ingest({
-    hits: [
-      {
-        channelId: "D01",
-        channelLabel: "DM",
-        kind: "dm",
-        participants: [],
-        author: { id: "U_ANA", name: "Ana Novak" },
-        isBot: false,
-        ts: "1795000000.000100",
-        threadTs: null,
-        permalink: "https://example.slack.com/x",
-        text: "hi",
-      },
-    ],
+    hits: [],
     myHits: [],
     channelHits: [],
     hasMoreChannelHits: false,
     me: "U_ME",
     projectKeys: ["PROJ"],
-    syncedAt: new Date(),
+    syncedAt: new Date("2026-11-21T10:00:00Z"),
     lookbackDays: 7,
+    ...input,
   });
+
+const slackHit = (overrides: Partial<SlackHit>): SlackHit => ({
+  channelId: "D01",
+  channelLabel: "DM",
+  kind: "dm",
+  participants: [],
+  author: { id: "U_ANA", name: "Ana Novak" },
+  isBot: false,
+  ts: "1795000000.000100",
+  threadTs: null,
+  permalink: "https://example.slack.com/x",
+  text: "hi",
+  ...overrides,
+});
+
+const channelHit = (channelId: string, ts: string): SlackHit =>
+  slackHit({ channelId, channelLabel: `#${channelId}`, kind: "channel", ts });
+
+const seedCard = (store: BoardStore) => sync(store, { hits: [slackHit({})] });
 
 test(
   "serves the vendored search library to the page and nothing else from disk",
@@ -321,29 +330,7 @@ test(
 test(
   "queues exactly the approved steps, and refuses steps outside the allowed list",
   withBoard(async (port, token, store) => {
-    store.ingest({
-      hits: [
-        {
-          channelId: "D01",
-          channelLabel: "DM",
-          kind: "dm",
-          participants: [],
-          author: { id: "U_ANA", name: "Ana" },
-          isBot: false,
-          ts: "1795000000.000100",
-          threadTs: null,
-          permalink: "https://example.slack.com/x",
-          text: "hi",
-        },
-      ],
-      myHits: [],
-      channelHits: [],
-      hasMoreChannelHits: false,
-      me: "U_ME",
-      projectKeys: ["PROJ"],
-      syncedAt: new Date(),
-      lookbackDays: 7,
-    });
+    seedCard(store);
     const approve = (proposal: unknown) =>
       send(port, "/api/cards/D01/approve", {
         method: "POST",
@@ -361,5 +348,65 @@ test(
     const edited = { summary: "Reply", steps: [{ type: "slack_reply", text: "Edited by me." }] };
     assert.equal((await approve(edited)).status, 202);
     assert.deepEqual(store.claim("worker", new Date())?.input, { proposal: edited });
+  }),
+);
+
+const channelIds = (count: number): string =>
+  Array.from({ length: count }, (_, index) => `C${String(index).padStart(3, "0")}`).join(",");
+
+test(
+  "sends the other messages of the channels the page opened, and refuses a malformed channel list",
+  withBoard(async (port, token, store) => {
+    sync(store, { channelHits: [channelHit("C01", "1795000000.000100")] });
+    const state = (query: string) =>
+      send(port, `/api/state${query}`, { headers: { "x-board-token": token } });
+
+    const opened = JSON.parse((await state("?channels=C01")).body).otherMessages;
+    assert.deepEqual(
+      opened.channels.map((channel: { channelId: string; messages: unknown[] | null }) => [
+        channel.channelId,
+        channel.messages?.length ?? null,
+      ]),
+      [["C01", 1]],
+    );
+    assert.equal((await state(`?channels=${channelIds(MAX_LISTED_CHANNELS)}`)).status, 200);
+    assert.equal((await state(`?channels=${channelIds(MAX_LISTED_CHANNELS + 1)}`)).status, 400);
+    assert.equal((await state("?channels=C01,..%2Fx")).status, 400);
+  }),
+);
+
+test(
+  "marks channels read, clears the missing note only when all are marked, and refuses malformed marks",
+  withBoard(async (port, token, store) => {
+    sync(store, {
+      channelHits: [channelHit("C01", "1795000000.000100"), channelHit("C02", "1795000000.000200")],
+      hasMoreChannelHits: true,
+    });
+    const mark = (path: string, body: unknown) =>
+      send(port, `/api/channel-messages/${path}`, {
+        method: "POST",
+        headers: { "x-board-token": token },
+        body,
+      });
+    const summary = () => {
+      const { total, isMissing } = store.otherMessages(new Set());
+      return { total, isMissing };
+    };
+
+    const valid = { channelId: "C01", throughTs: "1795000000.000100" };
+    const refused = [
+      { channels: "C01" },
+      { channels: [{ ...valid, channelId: "../C01" }] },
+      { channels: [{ ...valid, throughTs: "soon" }] },
+      { channels: Array.from({ length: MAX_LISTED_CHANNELS + 1 }, () => valid) },
+    ];
+    for (const body of refused) assert.equal((await mark("read", body)).status, 400);
+    assert.deepEqual(summary(), { total: 2, isMissing: true });
+
+    assert.equal((await mark("read", { channels: [valid] })).status, 204);
+    assert.deepEqual(summary(), { total: 1, isMissing: true });
+    const ops = { channelId: "C02", throughTs: "1795000000.000200" };
+    assert.equal((await mark("read-all", { channels: [ops] })).status, 204);
+    assert.deepEqual(summary(), { total: 0, isMissing: false });
   }),
 );
