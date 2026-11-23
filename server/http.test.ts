@@ -125,9 +125,12 @@ const seedCard = (store: BoardStore) =>
       },
     ],
     myHits: [],
+    channelHits: [],
+    hasMoreChannelHits: false,
     me: "U_ME",
     projectKeys: ["PROJ"],
     syncedAt: new Date(),
+    lookbackDays: 7,
   });
 
 test(
@@ -334,9 +337,12 @@ test(
         },
       ],
       myHits: [],
+      channelHits: [],
+      hasMoreChannelHits: false,
       me: "U_ME",
       projectKeys: ["PROJ"],
       syncedAt: new Date(),
+      lookbackDays: 7,
     });
     const approve = (proposal: unknown) =>
       send(port, "/api/cards/D01/approve", {

@@ -103,13 +103,18 @@ const connectsBoard = (on: On): void => {
 
 type Call = { server: string; tool: string; args: Record<string, unknown> };
 
+const SYNC_WINDOW = { granted: true, after: 1795000000, startedAt: "2026-11-23T10:00:00.000Z" };
+const REFUSED_SYNC = { granted: false, after: 0, startedAt: "" };
+
 const startBoard = async (
   $: { session: { start: (e: never) => Promise<unknown> } },
   on: On,
   requests: unknown[],
   connectorAnswer: (call: Call) => McpToolResult = () => textResult("{}"),
+  { isSyncGranted = false }: { isSyncGranted?: boolean } = {},
 ) => {
   const clock = mock.clock(on);
+  const ingested: Record<string, unknown>[] = [];
   const finished: { id: unknown; outcome: unknown }[] = [];
   const connectorCalls: Call[] = [];
   const registered: Record<string, unknown>[] = [];
@@ -146,12 +151,16 @@ const startBoard = async (
       return { value: textResult("ok") };
     }
     if (e.tool === "begin_sync")
-      return { value: textResult(JSON.stringify({ granted: false, after: 0, startedAt: "" })) };
+      return { value: textResult(JSON.stringify(isSyncGranted ? SYNC_WINDOW : REFUSED_SYNC)) };
+    if (e.tool === "ingest") {
+      ingested.push(e.args);
+      return { value: textResult(JSON.stringify({ cards: 0, rankingBatches: 0, news: [] })) };
+    }
     return { value: boardServerAnswer(e.server, e.tool) };
   });
   await $.session.start({ cwd: "/", surface: "desktop", isInteractive: true } as never);
   await clock.advance(WORKER_TICK_MS);
-  return { finished, connectorCalls, registered, spawned, statuses };
+  return { finished, connectorCalls, registered, spawned, statuses, ingested };
 };
 
 test("/board opens the board right after session start, before any tool is listed", async ($, on) => {
@@ -297,4 +306,83 @@ test("reads a thread from Slack and hands its messages to the board", async ($, 
       },
     },
   ]);
+});
+
+const SEARCH_TOOL = "slack_search_public_and_private";
+const OTHERS_IN_MY_CHANNELS = "-from:<@U0ME>";
+const MAX_SEARCH_PAGES = 5;
+
+const searchPage = (blocks: string[], cursor: string | null): McpToolResult =>
+  textResult(
+    JSON.stringify({
+      results: blocks.join(""),
+      pagination_info:
+        cursor === null
+          ? "End of results"
+          : `For the next page of results use cursor \`${cursor}\``,
+    }),
+  );
+
+const channelResult = (page: number): string =>
+  [
+    "### Result 1 of 1",
+    "Channel: #backend (ID: C01)",
+    "From: Bob Kral (ID: U_BOB)",
+    `Message_ts: 1795000000.00000${page}`,
+    `Permalink: [link](https://example.slack.com/archives/C01/p179500000000000${page})`,
+    "Text: ",
+    `news ${page}`,
+    "",
+    "---",
+    "",
+  ].join("\n");
+
+const syncChannelPages = ($: Parameters<typeof startBoard>[0], on: On, lastPage: number) =>
+  startBoard(
+    $,
+    on,
+    [{ id: 11, kind: "sync", input: {}, card: null }],
+    ({ tool, args }) => {
+      if (tool !== SEARCH_TOOL || args.filters !== OTHERS_IN_MY_CHANNELS)
+        return searchPage([], null);
+      const page = args.cursor === undefined ? 1 : Number(String(args.cursor).slice(1));
+      return searchPage([channelResult(page)], page === lastPage ? null : `p${page + 1}`);
+    },
+    { isSyncGranted: true },
+  );
+
+test("searches my channels for what people and bots posted, and hands it to the board with the lookback", async ($, on) => {
+  const board = await syncChannelPages($, on, MAX_SEARCH_PAGES + 1);
+
+  const searches = board.connectorCalls.filter(
+    ({ args }) => args.filters === OTHERS_IN_MY_CHANNELS,
+  );
+  expect(searches[0]?.args).toEqual({
+    filters: OTHERS_IN_MY_CHANNELS,
+    channel_types: "public_channel,private_channel",
+    only_my_channels: true,
+    include_bots: true,
+    after: "1795000000",
+    sort: "timestamp",
+    response_format: "detailed",
+    include_context: false,
+    limit: 20,
+    natural_language_query: "",
+  });
+  const [sync] = board.ingested;
+  expect({
+    texts: (sync?.channelHits as { text: string }[] | undefined)?.map((hit) => hit.text),
+    hasMore: sync?.hasMoreChannelHits,
+    lookbackDays: sync?.lookbackDays,
+  }).toEqual({
+    texts: ["news 1", "news 2", "news 3", "news 4", "news 5"],
+    hasMore: true,
+    lookbackDays: 7,
+  });
+});
+
+test("tells the board nothing is missing when the last page it reads is Slack's last", async ($, on) => {
+  const board = await syncChannelPages($, on, MAX_SEARCH_PAGES);
+
+  expect(board.ingested[0]?.hasMoreChannelHits).toBe(false);
 });

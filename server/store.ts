@@ -1,7 +1,15 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { channelMessagesAfterSync, unreadChannelMessages } from "../core/channel-messages.ts";
 import { conversationView } from "../core/conversation.ts";
-import { dropAnswered, mergeHits, newMessages, peopleFromHits } from "../core/inbox.ts";
+import {
+  conversationKey,
+  dropAnswered,
+  isNewer,
+  mergeHits,
+  newMessages,
+  peopleFromHits,
+} from "../core/inbox.ts";
 import { answersConversation } from "../core/steps.ts";
 import { ticketKeys } from "../core/tickets.ts";
 import type {
@@ -10,6 +18,8 @@ import type {
   CardKind,
   CardMessage,
   CardPriority,
+  ChannelMessage,
+  ChannelRead,
   ClaimedRequest,
   ConversationKind,
   FinishOutcome,
@@ -18,6 +28,7 @@ import type {
   LookupState,
   NewMessage,
   NewsBatch,
+  OtherMessages,
   Priority,
   Proposal,
   RankingCard,
@@ -38,6 +49,7 @@ const IGNORED_KEEP_MS = 30 * 24 * 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 const BUSY_TIMEOUT_MS = 5000;
 const COMPOSE_PREFIX = "compose:";
+const MISSING_CHANNEL_MESSAGES = "channel_messages_missing_at";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS cards (
@@ -75,6 +87,17 @@ CREATE TABLE IF NOT EXISTS card_context (
   history_ts TEXT,
   history_error TEXT
 );
+CREATE TABLE IF NOT EXISTS channel_messages (
+  key TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL,
+  channel_label TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  permalink TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS channel_messages_by_channel ON channel_messages (channel_id, ts);
+CREATE TABLE IF NOT EXISTS channel_reads (channel_id TEXT PRIMARY KEY, read_ts TEXT NOT NULL);
 `;
 
 const TICKETS_TABLE = `
@@ -143,6 +166,33 @@ type TicketRow = {
 
 type PersonRow = { channel_id: string; label: string; kind: Recipient["kind"] };
 
+type ChannelMessageRow = {
+  key: string;
+  channel_id: string;
+  channel_label: string;
+  ts: string;
+  author_name: string;
+  text: string;
+  permalink: string;
+};
+
+type ChannelSummaryRow = {
+  channel_id: string;
+  channel_label: string;
+  count: number;
+  latest_ts: string;
+};
+
+const channelMessageOf = (row: ChannelMessageRow): ChannelMessage => ({
+  key: row.key,
+  channelId: row.channel_id,
+  channelLabel: row.channel_label,
+  ts: row.ts,
+  authorName: row.author_name,
+  text: row.text,
+  permalink: row.permalink,
+});
+
 const ticketOf = (row: TicketRow): TicketState => ({
   key: row.key,
   status: row.status,
@@ -178,6 +228,10 @@ const rankingCardOf = (row: CardRow): RankingCard | null => {
 
 const tsToIso = (ts: string): string => new Date(Number(ts) * 1000).toISOString();
 
+const SLACK_TS_FRACTION_DIGITS = 6;
+
+const tsOfDate = (date: Date): string => (date.getTime() / 1000).toFixed(SLACK_TS_FRACTION_DIGITS);
+
 const likePattern = (query: string): string =>
   `%${query.replace(/[\\%_]/g, (character) => `\\${character}`)}%`;
 
@@ -186,9 +240,12 @@ type Lease = { holder: string; until: string };
 export type SyncInput = {
   hits: SlackHit[];
   myHits: SlackHit[];
+  channelHits: SlackHit[];
+  hasMoreChannelHits: boolean;
   me: string;
   projectKeys: string[];
   syncedAt: Date;
+  lookbackDays: number;
 };
 
 const iso = (date: Date): string => date.toISOString();
@@ -331,13 +388,18 @@ export class BoardStore {
       );
       const merged = dropAnswered(mergeHits(known, sync.hits, sync.me, ignored), sync.myHits);
       for (const card of merged) this.#saveInboxCard(card, before.get(card.key), sync);
+      this.#syncChannelMessages(sync, [
+        ...merged.map((card) => card.key),
+        ...ignored.keys(),
+        ...sync.myHits.map(conversationKey),
+      ]);
       const kept = new Set(merged.map((card) => card.key));
       for (const key of before.keys()) if (!kept.has(key)) this.#deleteCard(key);
       this.#forgetUnusedTickets();
       this.#rememberPeople(peopleFromHits(sync.hits, sync.me), sync.syncedAt);
       this.#setMeta("last_sync_at", iso(sync.syncedAt));
       this.#setMeta("me", sync.me);
-      this.#db.prepare(`DELETE FROM meta WHERE key = 'last_sync_error'`).run();
+      this.#deleteMeta("last_sync_error");
       const news = isFirstSync ? [] : newMessages(known, merged);
       if (news.length > 0) this.#setMeta("news", { at: iso(sync.syncedAt), items: news });
       return news;
@@ -394,6 +456,42 @@ export class BoardStore {
         priority: row.priority,
         priorityReason: row.priority_reason,
       };
+    });
+  }
+
+  otherMessages(openChannels: ReadonlySet<string>): OtherMessages {
+    const summaries = this.#db
+      .prepare(
+        `SELECT channel_id, channel_label, COUNT(*) AS count, MAX(ts) AS latest_ts
+         FROM channel_messages GROUP BY channel_id ORDER BY latest_ts DESC`,
+      )
+      .all() as ChannelSummaryRow[];
+    const messagesIn = this.#db.prepare(
+      "SELECT * FROM channel_messages WHERE channel_id = ? ORDER BY ts",
+    );
+    return {
+      total: summaries.reduce((sum, summary) => sum + summary.count, 0),
+      isMissing: this.#meta<string>(MISSING_CHANNEL_MESSAGES) !== null,
+      channels: summaries.map((summary) => ({
+        channelId: summary.channel_id,
+        label: summary.channel_label,
+        count: summary.count,
+        latestTs: summary.latest_ts,
+        messages: openChannels.has(summary.channel_id)
+          ? (messagesIn.all(summary.channel_id) as ChannelMessageRow[]).map(channelMessageOf)
+          : null,
+      })),
+    };
+  }
+
+  markChannelsRead(marks: ChannelRead[]): void {
+    this.#transaction(() => this.#markRead(marks));
+  }
+
+  markAllChannelsRead(marks: ChannelRead[]): void {
+    this.#transaction(() => {
+      this.#markRead(marks);
+      this.#deleteMeta(MISSING_CHANNEL_MESSAGES);
     });
   }
 
@@ -762,6 +860,78 @@ export class BoardStore {
     for (const key of keys) this.#trackTicket(key, sync.syncedAt);
   }
 
+  #markRead(marks: ChannelRead[]): void {
+    const reads = this.#channelReads();
+    const upsert = this.#db.prepare(
+      "INSERT INTO channel_reads (channel_id, read_ts) VALUES (?, ?) ON CONFLICT(channel_id) DO UPDATE SET read_ts = excluded.read_ts",
+    );
+    for (const mark of marks)
+      if (isNewer(mark.throughTs, reads.get(mark.channelId)))
+        upsert.run(mark.channelId, mark.throughTs);
+    this.#replaceChannelMessages(
+      unreadChannelMessages(this.#storedChannelMessages(), this.#channelReads()),
+    );
+  }
+
+  #syncChannelMessages(sync: SyncInput, coveredKeys: string[]): void {
+    const keepFrom = new Date(sync.syncedAt.getTime() - sync.lookbackDays * DAY_MS);
+    this.#replaceChannelMessages(
+      channelMessagesAfterSync({
+        stored: this.#storedChannelMessages(),
+        hits: sync.channelHits,
+        me: sync.me,
+        covered: new Set(coveredKeys),
+        readThrough: this.#channelReads(),
+        keepFromTs: tsOfDate(keepFrom),
+      }),
+    );
+    this.#noteMissingChannelMessages(sync, keepFrom);
+  }
+
+  #noteMissingChannelMessages(sync: SyncInput, keepFrom: Date): void {
+    if (sync.hasMoreChannelHits) {
+      this.#setMeta(MISSING_CHANNEL_MESSAGES, iso(sync.syncedAt));
+      return;
+    }
+    const missingAt = this.#meta<string>(MISSING_CHANNEL_MESSAGES);
+    if (missingAt !== null && new Date(missingAt) < keepFrom)
+      this.#deleteMeta(MISSING_CHANNEL_MESSAGES);
+  }
+
+  #channelReads(): Map<string, string> {
+    return new Map(
+      (
+        this.#db.prepare("SELECT channel_id, read_ts FROM channel_reads").all() as {
+          channel_id: string;
+          read_ts: string;
+        }[]
+      ).map((row) => [row.channel_id, row.read_ts]),
+    );
+  }
+
+  #storedChannelMessages(): ChannelMessage[] {
+    return (this.#db.prepare("SELECT * FROM channel_messages").all() as ChannelMessageRow[]).map(
+      channelMessageOf,
+    );
+  }
+
+  #replaceChannelMessages(messages: ChannelMessage[]): void {
+    this.#db.prepare("DELETE FROM channel_messages").run();
+    const insert = this.#db.prepare(
+      "INSERT INTO channel_messages (key, channel_id, channel_label, ts, author_name, text, permalink) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    for (const message of messages)
+      insert.run(
+        message.key,
+        message.channelId,
+        message.channelLabel,
+        message.ts,
+        message.authorName,
+        message.text,
+        message.permalink,
+      );
+  }
+
   #trackTicket(issueKey: string, now: Date): void {
     const inserted = this.#db
       .prepare(`INSERT OR IGNORE INTO tickets (key, status, updated_at) VALUES (?, 'loading', ?)`)
@@ -826,6 +996,10 @@ export class BoardStore {
       | { value: string }
       | undefined;
     return row === undefined ? null : (JSON.parse(row.value) as T);
+  }
+
+  #deleteMeta(key: string): void {
+    this.#db.prepare("DELETE FROM meta WHERE key = ?").run(key);
   }
 
   #setMeta(key: string, value: unknown): void {
