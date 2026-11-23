@@ -111,6 +111,15 @@ export const mergeHits = (
   return [...byKey.values()];
 };
 
+export const hitsInFollowedConversations = (
+  hits: SlackHit[],
+  cards: InboxCard[],
+  ignored: IgnoredConversations,
+): SlackHit[] => {
+  const followed = new Set([...cards.map((card) => card.key), ...ignored.keys()]);
+  return hits.filter((hit) => followed.has(conversationKey(hit)));
+};
+
 const latestReplyByConversation = (myHits: SlackHit[]): Map<string, string> => {
   const latest = new Map<string, string>();
   for (const hit of myHits) {

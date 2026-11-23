@@ -5,6 +5,7 @@ import { conversationView } from "../core/conversation.ts";
 import {
   conversationKey,
   dropAnswered,
+  hitsInFollowedConversations,
   isNewer,
   mentionsEveryone,
   mergeHits,
@@ -431,7 +432,9 @@ export class BoardStore {
         ...sync.hits,
         ...sync.channelHits.filter((hit) => mentionsEveryone(hit.text)),
       ];
-      const merged = dropAnswered(mergeHits(known, inboxHits, sync.me, ignored), sync.myHits);
+      const forMe = mergeHits(known, inboxHits, sync.me, ignored);
+      const followUps = hitsInFollowedConversations(sync.channelHits, forMe, ignored);
+      const merged = dropAnswered(mergeHits(forMe, followUps, sync.me, ignored), sync.myHits);
       for (const card of merged) this.#saveInboxCard(card, before.get(card.key), sync);
       this.#syncChannelMessages(sync, [
         ...merged.map((card) => card.key),

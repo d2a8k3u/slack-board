@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   dropAnswered,
+  hitsInFollowedConversations,
   mentionsEveryone,
   mergeHits,
   newMessages,
@@ -240,6 +241,34 @@ test("keeps an ignored conversation away until a message newer than the ignored 
       ignored,
     )[0]?.messages.map((m) => m.text),
     ["fresh"],
+  );
+});
+
+test("follows only the threads on a card or handled from one, not every thread in my channels", () => {
+  const inChannel = (overrides: Partial<SlackHit>): SlackHit =>
+    hit({
+      channelId: "C01",
+      channelLabel: "#backend",
+      kind: "channel",
+      participants: [],
+      ...overrides,
+    });
+  const cards = mergeHits([], [inChannel({ ts: "1795000001.000000" })], ME, NO_IGNORED);
+  const handled = new Map([["C01:1795000002.000000", "1795000002.000000"]]);
+
+  const followed = hitsInFollowedConversations(
+    [
+      inChannel({ ts: "1795000011.000000", threadTs: "1795000001.000000", text: "on a card" }),
+      inChannel({ ts: "1795000012.000000", threadTs: "1795000002.000000", text: "handled" }),
+      inChannel({ ts: "1795000013.000000", threadTs: "1795000003.000000", text: "unknown" }),
+    ],
+    cards,
+    handled,
+  );
+
+  assert.deepEqual(
+    followed.map((reply) => reply.text),
+    ["on a card", "handled"],
   );
 });
 

@@ -422,6 +422,28 @@ test(
 );
 
 test(
+  "brings a new reply in a thread I was only mentioned in, also after I handled its card",
+  withStores((store) => {
+    const mention = channelHit({ ts: "1795000100.000000", text: `<@${ME}> can you check?` });
+    const reply = channelHit({
+      ts: "1795000200.000000",
+      threadTs: "1795000100.000000",
+      author: { id: "U_ANA", name: "Ana" },
+      text: "Any news?",
+    });
+    ingestChannels(store, [mention], { hits: [mention] });
+    store.ignore("C01:1795000100.000000", NOW);
+
+    ingestChannels(store, [reply], { now: LATER(60_000) });
+
+    assert.deepEqual(
+      store.cards().map((card) => ({ key: card.key, texts: card.messages.map((m) => m.text) })),
+      [{ key: "C01:1795000100.000000", texts: ["Any news?"] }],
+    );
+  }),
+);
+
+test(
   "hands each request to exactly one worker across processes",
   withStores((first, second) => {
     ingest(first, [
