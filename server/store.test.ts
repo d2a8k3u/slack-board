@@ -337,6 +337,25 @@ test("asks again once about cards an earlier version sent for ranking but got no
   }
 });
 
+test("upgrades a database from version 4 so Actions can keep its waiting steps", () => {
+  const folder = mkdtempSync(join(tmpdir(), "slack-board-upgrade-v4-"));
+  const path = join(folder, "board.db");
+  const first = new BoardStore(path);
+  ingest(first, [hit({ text: "no ticket" })]);
+  first.close();
+  const old = new DatabaseSync(path);
+  old.exec("ALTER TABLE card_context DROP COLUMN action_proposal; PRAGMA user_version = 4");
+  old.close();
+  const store = new BoardStore(path);
+  try {
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    assert.deepEqual(store.cards()[0]?.actionProposal?.proposal, COMMENT);
+  } finally {
+    store.close();
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
 test("upgrades a database from the first version and fetches details for its tickets again", () => {
   const folder = mkdtempSync(join(tmpdir(), "slack-board-upgrade-"));
   const path = join(folder, "board.db");
@@ -525,14 +544,173 @@ test(
   }),
 );
 
+const COMMENT: Proposal = {
+  summary: "Comment",
+  steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+};
+
+const draftReply = (store: BoardStore, text: string): Proposal => {
+  const draft: Proposal = { summary: "Reply", steps: [{ type: "slack_reply", text }] };
+  store.request("propose", "D01", { text }, NOW);
+  store.finish(store.claim("worker", NOW)?.id ?? 0, { ok: true, proposal: draft }, NOW);
+  return draft;
+};
+
+const answerPrompt = (store: BoardStore, prompt: string, proposal?: Proposal) => {
+  store.act("D01", prompt, NOW);
+  store.finish(
+    store.claim("worker", NOW)?.id ?? 0,
+    {
+      ok: true,
+      reply: "Done looking.",
+      tools: [],
+      ...(proposal === undefined ? {} : { proposal }),
+    },
+    NOW,
+  );
+};
+
 test(
-  "keeps each prompt and Claude's answer as the card's action history, with the steps Claude proposes",
+  "keeps a reply draft and the steps Claude proposes in Actions apart, so neither replaces the other",
   withStores((store) => {
     ingest(store, [hit({ text: "no ticket" })]);
-    const proposal: Proposal = {
-      summary: "Comment",
-      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+    const first = draftReply(store, "First draft.");
+
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    assert.deepEqual(store.cards()[0]?.proposal, first);
+    const second = draftReply(store, "Second draft.");
+
+    const [card] = store.cards();
+    assert.deepEqual(card?.proposal, second);
+    assert.deepEqual(card?.actionProposal, {
+      turn: 1,
+      proposal: COMMENT,
+      approveCloses: false,
+      isRunning: false,
+    });
+  }),
+);
+
+test(
+  "moves the waiting steps under each newer answer that revises them, and keeps them through an answer without steps",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    answerPrompt(store, "Who reported it?");
+    assert.equal(store.cards()[0]?.actionProposal?.turn, 1);
+
+    const revised: Proposal = {
+      summary: "Comment and move",
+      steps: [
+        ...COMMENT.steps,
+        { type: "jira_transition", issueKey: "PROJ-1", transitionId: "31", status: "Review" },
+      ],
     };
+    answerPrompt(store, "Also move it to review", revised);
+
+    const waiting = store.cards()[0]?.actionProposal;
+    assert.deepEqual(
+      { turn: waiting?.turn, proposal: waiting?.proposal },
+      { turn: 5, proposal: revised },
+    );
+  }),
+);
+
+test(
+  "runs the steps approved under an answer only while they still wait there, and shows them running",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    const edited: Proposal = {
+      summary: "Comment",
+      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on staging." }],
+    };
+
+    assert.equal(store.approveSteps("D01", 0, edited, NOW), "gone");
+    assert.equal(store.approveSteps("D01", 1, edited, NOW), "queued");
+    assert.equal(store.approveSteps("D01", 1, edited, NOW), "busy");
+
+    assert.deepEqual(store.cards()[0]?.actionProposal, {
+      turn: 1,
+      proposal: edited,
+      approveCloses: false,
+      isRunning: true,
+    });
+    assert.deepEqual(store.claim("worker", NOW)?.input, { proposal: edited, turn: 1 });
+  }),
+);
+
+test(
+  "after a failed run of steps from Actions shows the error there and keeps only the steps that did not run under the answer",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    const draft = draftReply(store, "On it.");
+    const move: Proposal = {
+      summary: "Move PROJ-1 to review",
+      steps: [
+        { type: "jira_transition", issueKey: "PROJ-1", transitionId: "31", status: "Review" },
+      ],
+    };
+    const both: Proposal = {
+      summary: "Comment and move",
+      steps: [...COMMENT.steps, ...move.steps],
+    };
+    answerPrompt(store, "Comment and move it", both);
+    store.approveSteps("D01", 1, both, NOW);
+    store.finish(
+      store.claim("worker", NOW)?.id ?? 0,
+      {
+        ok: false,
+        error: "Step 2 of 2 failed, steps 1 to 1 are done: transition_not_allowed",
+        remaining: move,
+      },
+      LATER(1000),
+    );
+
+    const [failed] = store.cards();
+    assert.equal(failed?.error, null);
+    assert.deepEqual(failed?.proposal, draft);
+    assert.deepEqual(
+      { turn: failed?.actionProposal?.turn, proposal: failed?.actionProposal?.proposal },
+      { turn: 1, proposal: move },
+    );
+    assert.deepEqual(failed?.actions.at(-1), {
+      author: "claude",
+      text: "Step 2 of 2 failed, steps 1 to 1 are done: transition_not_allowed",
+      at: LATER(1000).toISOString(),
+      tools: [],
+      isFailed: true,
+    });
+
+    assert.equal(store.approveSteps("D01", 1, move, NOW), "queued");
+    store.finish(store.claim("worker", NOW)?.id ?? 0, { ok: true }, NOW);
+
+    const [done] = store.cards();
+    assert.equal(done?.actionProposal, null);
+    assert.deepEqual(done?.proposal, draft);
+    assert.equal(done?.actions.at(-1)?.text, "Done: Move PROJ-1 to review");
+  }),
+);
+
+test(
+  "discards the waiting steps only under the answer they wait under, so a stale page cannot drop a newer version",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    answerPrompt(store, "Comment on the ticket", COMMENT);
+    answerPrompt(store, "Comment in English", COMMENT);
+
+    store.discardSteps("D01", 1);
+    assert.equal(store.cards()[0]?.actionProposal?.turn, 3);
+    store.discardSteps("D01", 3);
+    assert.equal(store.cards()[0]?.actionProposal, null);
+  }),
+);
+
+test(
+  "keeps each prompt and Claude's answer as the card's action history",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    const proposal = COMMENT;
 
     assert.equal(store.act("D01", "Find the related ticket", NOW), true);
     assert.deepEqual(store.cards()[0]?.pending, { kind: "act", status: "pending" });
@@ -567,8 +745,6 @@ test(
         isFailed: false,
       },
     ]);
-    assert.deepEqual(card?.proposal, proposal);
-    assert.equal(card?.approveCloses, false);
     assert.equal(card?.pending, null);
   }),
 );

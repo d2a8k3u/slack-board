@@ -110,6 +110,12 @@ export type JiraEditableFields = { summary?: string; labels?: string[]; priority
 
 export type Proposal = { summary: string; steps: Step[]; replyToTs?: string | null };
 
+export type WaitingSteps = { turn: number; proposal: Proposal };
+
+export type ActionProposal = WaitingSteps & { approveCloses: boolean; isRunning: boolean };
+
+export type StepsApproval = "queued" | "busy" | "gone";
+
 export type ProposalCheck = { ok: true; proposal: Proposal } | { ok: false; reason: string };
 
 export type ActionAnswer = {
@@ -169,6 +175,7 @@ export type BoardCard = {
   tickets: TicketState[];
   proposal: Proposal | null;
   approveCloses: boolean;
+  actionProposal: ActionProposal | null;
   pending: { kind: RequestKind; status: RequestStatus } | null;
   error: string | null;
   updatedAt: string;

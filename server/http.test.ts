@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { SlackHit } from "../core/types.ts";
+import type { Proposal, SlackHit } from "../core/types.ts";
 import { createBoardServer, MAX_LISTED_CHANNELS } from "./http.ts";
 import { BoardStore, type SyncInput } from "./store.ts";
 
@@ -348,6 +348,46 @@ test(
     const edited = { summary: "Reply", steps: [{ type: "slack_reply", text: "Edited by me." }] };
     assert.equal((await approve(edited)).status, 202);
     assert.deepEqual(store.claim("worker", new Date())?.input, { proposal: edited });
+  }),
+);
+
+test(
+  "approves or discards the steps waiting under an answer in Actions, and refuses steps that no longer wait there",
+  withBoard(async (port, token, store) => {
+    seedCard(store);
+    const comment = {
+      summary: "Comment",
+      steps: [{ type: "jira_comment", issueKey: "PROJ-1", body: "Fix is on dev." }],
+    };
+    const answerWithSteps = () => {
+      store.act("D01", "Comment on the ticket", new Date());
+      store.finish(
+        store.claim("worker", new Date())?.id ?? 0,
+        { ok: true, reply: "Here is the comment.", tools: [], proposal: comment as Proposal },
+        new Date(),
+      );
+    };
+    const onTurn = (turn: number, action: string, proposal?: unknown) =>
+      send(port, `/api/cards/D01/turns/${turn}/${action}`, {
+        method: "POST",
+        headers: { "x-board-token": token },
+        body: proposal === undefined ? undefined : { proposal },
+      });
+
+    answerWithSteps();
+    assert.equal((await onTurn(1, "discard")).status, 204);
+    assert.equal(store.cards()[0]?.actionProposal, null);
+
+    answerWithSteps();
+    const refused = await onTurn(3, "approve", {
+      summary: "Delete",
+      steps: [{ type: "jira_delete" }],
+    });
+    assert.equal(refused.status, 400);
+    assert.equal((await onTurn(1, "approve", comment)).status, 404);
+    assert.equal((await onTurn(3, "approve", comment)).status, 202);
+    assert.equal((await onTurn(3, "approve", comment)).status, 409);
+    assert.deepEqual(store.claim("worker", new Date())?.input, { proposal: comment, turn: 3 });
   }),
 );
 
