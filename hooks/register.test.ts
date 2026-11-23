@@ -1,5 +1,6 @@
 import type { CommandRunInput, McpToolResult, On, ProcessRunResult, ToolInfo } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
+import { MENTIONS_CHANGED } from "../core/proposal.ts";
 
 const BOARD_COMMAND: CommandRunInput = {
   command: "board",
@@ -244,6 +245,23 @@ test(
     );
   },
 );
+
+test("refuses a draft that drops a mention the note picked", STYLE, async ($, on) => {
+  const draft = { summary: "Reply", steps: [{ type: "slack_reply", text: "Ana, it is done." }] };
+  on("model.complete", () => ({
+    value: {
+      isAnswered: true,
+      text: JSON.stringify(draft),
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }));
+
+  const board = await startBoard($, on, [
+    { id: 12, kind: "propose", input: { text: "tell <@U_ANA|Ana Novak> it is done" }, card: CARD },
+  ]);
+
+  expect(board.finished).toEqual([{ id: 12, outcome: { ok: false, error: MENTIONS_CHANGED } }]);
+});
 
 test("runs an approved call of a connector tool with exactly the input that was approved", async ($, on) => {
   const step = { type: "tool_call", tool: CREATE_PAGE, input: { title: "Notes", body: "PROJ-1" } };

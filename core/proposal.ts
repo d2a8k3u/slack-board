@@ -179,6 +179,22 @@ export const directProposal = (text: string, replyToTs: string | null): Proposal
   };
 };
 
+export const MENTIONS_CHANGED =
+  "Claude's draft did not keep exactly the people and channels your note mentions. Draft again, or send your note as written.";
+
+const MENTION_TOKEN = /<([@#!][^|>]*)(?:\|[^>]*)?>/g;
+
+const mentionsIn = (texts: string[]): Set<string> =>
+  new Set(texts.flatMap((text) => [...text.matchAll(MENTION_TOKEN)].map(([, key = ""]) => key)));
+
+export const keepsMentions = (note: string, proposal: Proposal): boolean => {
+  const kept = mentionsIn(
+    proposal.steps.flatMap((step) => (step.type === "slack_reply" ? [step.text] : [])),
+  );
+  const asked = mentionsIn([note]);
+  return kept.size === asked.size && [...asked].every((mention) => kept.has(mention));
+};
+
 const isStructuredAnswer = (value: unknown): value is Fields & { reply: string } =>
   isRecord(value) && typeof value.reply === "string";
 

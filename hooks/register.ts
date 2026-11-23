@@ -20,7 +20,7 @@ import {
   type TicketContext,
   ticketSummaryPrompt,
 } from "../core/prompts.ts";
-import { parseProposal } from "../core/proposal.ts";
+import { keepsMentions, MENTIONS_CHANGED, parseProposal } from "../core/proposal.ts";
 import { nextSyncAt } from "../core/schedule.ts";
 import { readHistory } from "../core/slack-history.ts";
 import { readRecipients, readSearchPage } from "../core/slack-search.ts";
@@ -302,9 +302,9 @@ const propose = async (
     note: text,
   });
   const check = parseProposal(await complete($, DRAFT_MODEL, prompt), settings.projectKeys);
-  return check.ok
-    ? { ok: true, proposal: { ...check.proposal, replyToTs } }
-    : { ok: false, error: check.reason };
+  if (!check.ok) return { ok: false, error: check.reason };
+  if (!keepsMentions(text, check.proposal)) return { ok: false, error: MENTIONS_CHANGED };
+  return { ok: true, proposal: { ...check.proposal, replyToTs } };
 };
 
 const connectorTools = async ($: EngineInterface): Promise<string[]> =>

@@ -3,11 +3,13 @@ import { test } from "node:test";
 import {
   checkProposal,
   directProposal,
+  keepsMentions,
   MAX_TOOL_INPUT_CHARS,
   parseActionAnswer,
   parseProposal,
   SLACK_TEXT_LIMIT,
 } from "./proposal.ts";
+import type { Proposal } from "./types.ts";
 
 const PROJECTS = ["PROJ"];
 
@@ -168,6 +170,27 @@ test("sends the user's own text as written, or reacts when it is only an emoji c
   assert.deepEqual(directProposal(":+1: sounds good", null).steps, [
     { type: "slack_reply", text: ":+1: sounds good" },
   ]);
+});
+
+test("accepts a draft only when its replies mention and link exactly what the note does", () => {
+  const note = "tell <@U0ANA|Ana Novak> it is in <#C0DEV|dev>";
+  const replying = (...texts: string[]): Proposal => ({
+    summary: "Reply",
+    steps: texts.map((text) => ({ type: "slack_reply", text })),
+  });
+  const cases: [string, Proposal, boolean][] = [
+    ["keeps both, with its own labels", replying("<@U0ANA|Ana>, it is in <#C0DEV|dev>."), true],
+    ["drops the person", replying("Ana, it is in <#C0DEV|dev>."), false],
+    ["adds a channel-wide mention", replying("<!here> <@U0ANA|Ana>, see <#C0DEV|dev>."), false],
+    [
+      "reacts instead of replying",
+      { summary: "React", steps: [{ type: "slack_reaction", emoji: "eyes" }] },
+      false,
+    ],
+  ];
+
+  for (const [name, proposal, expected] of cases)
+    assert.equal(keepsMentions(note, proposal), expected, name);
 });
 
 test("holds a proposal to ten steps", () => {
