@@ -43,4 +43,5 @@ The board page listens on 127.0.0.1 only. Every API request needs a random secre
 - A thread you once wrote in keeps bringing its new replies to the board; Ignore a busy thread to quiet it until the next message.
 - A sync loads at most 100 channel messages, thread replies included. When a sync finds more, Other messages says some are missing, and an `@here`, `@channel` or `@everyone` among the missing ones gets no card.
 - A mention of a user group you belong to, such as `@backend`, brings no card: the Slack connector does not say which groups you are in.
+- A user group in a message shows as `@group`, and the `@` list in a reply offers no user groups: the Slack connector gives the board a group's ID but not its name.
 - The board cannot tell what you already read in Slack or which channels you muted, so Other messages shows them all until you mark them read on the board.

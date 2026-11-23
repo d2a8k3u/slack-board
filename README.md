@@ -27,7 +27,7 @@ The small talk at the bottom can wait until lunch.
 - Runs prompts about a conversation in Actions the way Claude Code does: Claude looks things up with your connectors, answers on the card, and proposes any change as steps you approve.
 - Replies in the thread of any message you click and starts new messages to people or channels.
 - Typo-tolerant search across people, channels, messages and tickets, filters, grouping into sections, tiles or list, light and dark theme.
-- Mentions show as names; click one to start a message to that person.
+- Mentions people and links channels when you type `@` or `#` in a reply. Mentions in messages show as names; click one to start a message to that person.
 
 ## Requirements
 
