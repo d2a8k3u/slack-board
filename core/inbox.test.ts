@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dropAnswered, mergeHits, newMessages, peopleFromHits, threadTargetFor } from "./inbox.ts";
+import {
+  dropAnswered,
+  mentionsEveryone,
+  mergeHits,
+  newMessages,
+  peopleFromHits,
+  threadTargetFor,
+} from "./inbox.ts";
 import type { InboxCard, SlackHit } from "./types.ts";
 
 const ME = "U_ME";
@@ -269,5 +276,21 @@ test("removes what I answered in Slack and keeps what came after my reply", () =
   assert.deepEqual(
     left.map((card) => ({ key: card.key, texts: card.messages.map((m) => m.text) })),
     [{ key: "D01", texts: ["after my reply"] }],
+  );
+});
+
+test("counts @here, @channel and @everyone as mentions of me, not the word here or a user group", () => {
+  const cases: [string, boolean][] = [
+    ["<!here> standup in 5", true],
+    ["Deploy at noon <!channel>", true],
+    ["<!everyone> office is closed", true],
+    ["<!here|here> labelled", true],
+    ["Please reply here", false],
+    ["<!subteam^S0123|@backend> review this", false],
+  ];
+
+  assert.deepEqual(
+    cases.map(([text]) => [text, mentionsEveryone(text)]),
+    cases,
   );
 });

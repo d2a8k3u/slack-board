@@ -6,6 +6,7 @@ import {
   conversationKey,
   dropAnswered,
   isNewer,
+  mentionsEveryone,
   mergeHits,
   newMessages,
   peopleFromHits,
@@ -386,7 +387,11 @@ export class BoardStore {
           }[]
         ).map((row) => [row.key, row.last_ts]),
       );
-      const merged = dropAnswered(mergeHits(known, sync.hits, sync.me, ignored), sync.myHits);
+      const inboxHits = [
+        ...sync.hits,
+        ...sync.channelHits.filter((hit) => mentionsEveryone(hit.text)),
+      ];
+      const merged = dropAnswered(mergeHits(known, inboxHits, sync.me, ignored), sync.myHits);
       for (const card of merged) this.#saveInboxCard(card, before.get(card.key), sync);
       this.#syncChannelMessages(sync, [
         ...merged.map((card) => card.key),

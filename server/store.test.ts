@@ -833,6 +833,28 @@ test(
 );
 
 test(
+  "turns a person's @here into a card and leaves a bot's @channel among the other messages",
+  withStores((store) => {
+    ingestChannels(store, [
+      channelHit({ ts: "1795000100.000000", text: "<!here> standup moved" }),
+      channelHit({
+        ts: "1795000200.000000",
+        author: { id: "U_BOT", name: "Alarms" },
+        isBot: true,
+        text: "<!channel> disk full",
+      }),
+      channelHit({ ts: "1795000300.000000", text: "lunch?" }),
+    ]);
+
+    assert.deepEqual(
+      store.cards().map((card) => [card.key, card.messages.map((message) => message.text)]),
+      [["C01:1795000100.000000", ["<!here> standup moved"]]],
+    );
+    assert.deepEqual(otherTexts(store), ["<!channel> disk full", "lunch?"]);
+  }),
+);
+
+test(
   "says messages are missing after a sync found more than it loads, until all are marked read or the lookback passes",
   withStores((store) => {
     const backend = channelHit({ ts: "1795000100.000000" });
