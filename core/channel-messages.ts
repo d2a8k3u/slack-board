@@ -1,4 +1,4 @@
-import { compareTs, conversationKey, isNewer } from "./inbox.ts";
+import { authorNameOf, compareTs, conversationKey, isNewer } from "./inbox.ts";
 import type { ChannelMessage, SlackHit } from "./types.ts";
 
 export type ChannelSync = {
@@ -10,8 +10,6 @@ export type ChannelSync = {
   keepFromTs: string;
 };
 
-const NAMELESS_APP = "Slack app";
-
 const isPostedToChannel = (hit: SlackHit): boolean =>
   hit.kind === "channel" && (hit.threadTs === null || hit.threadTs === hit.ts);
 
@@ -20,7 +18,7 @@ const channelMessageOf = (hit: SlackHit): ChannelMessage => ({
   channelId: hit.channelId,
   channelLabel: hit.channelLabel,
   ts: hit.ts,
-  authorName: hit.author.name === "" ? NAMELESS_APP : hit.author.name,
+  authorName: authorNameOf(hit),
   text: hit.text,
   permalink: hit.permalink,
 });

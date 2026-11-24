@@ -75,15 +75,26 @@ const conversationOf = (hit: SlackHit, me: string): Conversation => ({
   target: targetOf(hit),
 });
 
+const NAMELESS_APP = "Slack app";
+
+export const authorNameOf = (hit: SlackHit): string =>
+  hit.author.name === "" ? NAMELESS_APP : hit.author.name;
+
 const messageOf = (hit: SlackHit): CardMessage => ({
   ts: hit.ts,
   authorId: hit.author.id,
-  authorName: hit.author.name,
+  authorName: authorNameOf(hit),
   text: hit.text,
   permalink: hit.permalink,
 });
 
 const isFromOthers = (hit: SlackHit, me: string): boolean => hit.author.id !== me && !hit.isBot;
+
+const mentionsMe = (text: string, me: string): boolean =>
+  text.includes(`<@${me}>`) || text.includes(`<@${me}|`);
+
+const isForMe = (hit: SlackHit, me: string): boolean =>
+  isFromOthers(hit, me) || (hit.isBot && mentionsMe(hit.text, me));
 
 const EVERYONE_MENTION = /<!(?:here|channel|everyone)(?:\|[^>]*)?>/;
 
@@ -102,7 +113,7 @@ export const mergeHits = (
 ): InboxCard[] => {
   const byKey = new Map(cards.map((card) => [card.key, card]));
   for (const hit of hits) {
-    if (!isFromOthers(hit, me)) continue;
+    if (!isForMe(hit, me)) continue;
     const conversation = conversationOf(hit, me);
     if (!isNewer(hit.ts, ignored.get(conversation.key))) continue;
     const card = byKey.get(conversation.key) ?? { ...conversation, messages: [] };
