@@ -1,4 +1,4 @@
-import type { EngineInterface, Register } from "claude-code";
+import type { EngineInterface, ModelCompleteResult, Register } from "claude-code";
 import {
   ACTION_LIMIT_MINUTES,
   type ActionRun,
@@ -56,6 +56,8 @@ const LOOKUP_SIZE = 8;
 const LATEST_COMMENTS = 10;
 const DRAFT_MODEL = "sonnet";
 const SUMMARY_MODEL = "haiku";
+const RETRY_DELAYS_MS = [5000, 15_000];
+const SELF_CLEARING_API_ERRORS = new Set(["rate_limit", "overloaded", "server_error"]);
 const SEARCH_TOOL = "slack_search_public_and_private";
 const BOARD_TOOL = "take_request";
 const BOARD_SERVER_KEY = "board";
@@ -159,14 +161,31 @@ const jiraServer = (servers: Servers, settings: Settings): string => {
   return servers.jira;
 };
 
+type Unanswered = Extract<ModelCompleteResult, { isAnswered: false }>;
+
+const clearsOnItsOwn = (answer: Unanswered): boolean =>
+  answer.reason === "api-error" &&
+  (answer.status === null || SELF_CLEARING_API_ERRORS.has(answer.error));
+
+const whyUnanswered = (answer: Unanswered): string => {
+  if (answer.reason !== "api-error") return ` (${answer.reason})`;
+  const response = answer.status === null ? "no HTTP response" : `HTTP ${answer.status}`;
+  return `: ${answer.error} (${response})`;
+};
+
 const complete = async (
   $: EngineInterface,
   model: string,
-  { system, prompt }: PromptPair,
+  pair: PromptPair,
+  retryDelaysMs: readonly number[] = RETRY_DELAYS_MS,
 ): Promise<string> => {
-  const answer = await $.model.complete({ model, system, prompt });
-  if (!answer.isAnswered) throw new Error(`Claude did not answer (${answer.reason})`);
-  return answer.text;
+  const answer = await $.model.complete({ model, system: pair.system, prompt: pair.prompt });
+  if (answer.isAnswered) return answer.text;
+  const [delayMs, ...laterDelaysMs] = retryDelaysMs;
+  if (delayMs === undefined || !clearsOnItsOwn(answer))
+    throw new Error(`Claude did not answer${whyUnanswered(answer)}`);
+  await $.clock.sleep(delayMs);
+  return complete($, model, pair, laterDelaysMs);
 };
 
 type SearchResult = { hits: SlackHit[]; hasMore: boolean };

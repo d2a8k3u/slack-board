@@ -1,3 +1,4 @@
+import { withoutConnectorQuote } from "./connector-quote.ts";
 import { compareTs } from "./inbox.ts";
 import type { HistoryMessage } from "./types.ts";
 
@@ -43,10 +44,10 @@ const messageOf = (section: string): HistoryMessage | null => {
     ts: ts[1] ?? "",
     authorId: author[2] ?? null,
     authorName: author[1]?.trim() ?? "",
-    text: section
-      .slice(ts.index + ts[0].length)
-      .trim()
-      .replace(REACTIONS_LINE, ""),
+    text: withoutConnectorQuote(section.slice(ts.index + ts[0].length).trim()).replace(
+      REACTIONS_LINE,
+      "",
+    ),
   };
 };
 

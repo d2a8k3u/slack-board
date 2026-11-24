@@ -87,6 +87,29 @@ test("reads a thread and a DM into messages oldest first, keeping who wrote each
   assert.doesNotMatch(JSON.stringify([readHistory(THREAD), readHistory(DM)]), /example\.com/);
 });
 
+test("reads message text without the connector's quote marks, and without its reactions line", () => {
+  const quoted = JSON.stringify({
+    messages: [
+      "=== THREAD PARENT MESSAGE ===",
+      "From: Ana Novak <ana@example.com> (U_ANA)",
+      "Time: 2026-11-25 00:23:44 +07",
+      "Message TS: 1795541024.674059",
+      "> Not yet, tomorrow.",
+      ">",
+      "> *Sent using* <@U_CLAUDE|Claude>",
+      "> Reactions: heart (1)",
+      "",
+      "No thread messsages",
+      "",
+    ].join("\n"),
+  });
+
+  assert.equal(
+    readHistory(quoted)[0]?.text,
+    "Not yet, tomorrow.\n\n*Sent using* <@U_CLAUDE|Claude>",
+  );
+});
+
 test("refuses an answer that is not a Slack message history", () => {
   assert.throws(() => readHistory("channel_not_found"), /not a Slack message history/);
 });

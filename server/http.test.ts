@@ -161,6 +161,26 @@ test(
 );
 
 test(
+  "tries the card's failed request again, and refuses when nothing on the card failed",
+  withBoard(async (port, token, store) => {
+    seedCard(store);
+    const retry = { method: "POST", headers: { "x-board-token": token } };
+    const now = new Date();
+
+    assert.deepEqual(await send(port, "/api/cards/D01/retry", retry), {
+      status: 404,
+      body: JSON.stringify({ error: "Nothing on this card waits to be tried again" }),
+    });
+
+    store.request("propose", "D01", { text: "say it is done" }, now);
+    store.finish(store.claim("worker", now)?.id ?? 0, { ok: false, error: "overloaded" }, now);
+
+    assert.equal((await send(port, "/api/cards/D01/retry", retry)).status, 202);
+    assert.deepEqual(store.claim("worker", now)?.input, { text: "say it is done" });
+  }),
+);
+
+test(
   "searches the saved people list instantly",
   withBoard(async (port, token, store) => {
     seedCard(store);
