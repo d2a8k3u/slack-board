@@ -161,7 +161,32 @@ const startBoard = async (
   });
   await $.session.start({ cwd: "/", surface: "desktop", isInteractive: true } as never);
   await clock.advance(WORKER_TICK_MS);
-  return { finished, connectorCalls, registered, spawned, statuses, ingested };
+  return { clock, finished, connectorCalls, registered, spawned, statuses, ingested };
+};
+
+const NO_USAGE = { input_tokens: 0, output_tokens: 0 };
+const DRAFT = { summary: "Reply", steps: [{ type: "slack_reply", text: "It is done." }] };
+const DRAFT_REQUEST = { id: 13, kind: "propose", input: { text: "say it is done" }, card: CARD };
+const RETRY_WAITS_MS = 20_000;
+
+const answeredWith = (text: string) => ({ isAnswered: true, text, usage: NO_USAGE });
+
+const apiError = (status: number | null, error: string) => ({
+  isAnswered: false,
+  reason: "api-error",
+  status,
+  error,
+  usage: NO_USAGE,
+});
+
+const modelAnswers = (on: On, replies: unknown[]): { count: number } => {
+  const calls = { count: 0 };
+  on("model.complete", () => {
+    const reply = replies[Math.min(calls.count, replies.length - 1)];
+    calls.count += 1;
+    return { value: reply as never };
+  });
+  return calls;
 };
 
 test("/board opens the board right after session start, before any tool is listed", async ($, on) => {
@@ -245,6 +270,49 @@ test(
     );
   },
 );
+
+test(
+  "drafts again when the API refused for a moment, and offers the draft that came back",
+  STYLE,
+  async ($, on) => {
+    const calls = modelAnswers(on, [
+      apiError(429, "rate_limit"),
+      answeredWith(JSON.stringify(DRAFT)),
+    ]);
+
+    const board = await startBoard($, on, [DRAFT_REQUEST]);
+    await board.clock.advance(RETRY_WAITS_MS);
+
+    expect(calls.count).toBe(2);
+    expect(board.finished).toEqual([
+      { id: 13, outcome: { ok: true, proposal: { ...DRAFT, replyToTs: null } } },
+    ]);
+  },
+);
+
+for (const { name, reply, attempts, error } of [
+  {
+    name: "fails at once on an API error that does not clear on its own, and names it",
+    reply: apiError(400, "invalid_request"),
+    attempts: 1,
+    error: "Claude did not answer: invalid_request (HTTP 400)",
+  },
+  {
+    name: "gives up after three attempts when the API keeps sending no response, and says so",
+    reply: apiError(null, "unknown"),
+    attempts: 3,
+    error: "Claude did not answer: unknown (no HTTP response)",
+  },
+])
+  test(name, STYLE, async ($, on) => {
+    const calls = modelAnswers(on, [reply]);
+
+    const board = await startBoard($, on, [DRAFT_REQUEST]);
+    await board.clock.advance(RETRY_WAITS_MS);
+
+    expect(calls.count).toBe(attempts);
+    expect(board.finished).toEqual([{ id: 13, outcome: { ok: false, error } }]);
+  });
 
 test("refuses a draft that drops a mention the note picked", STYLE, async ($, on) => {
   const draft = { summary: "Reply", steps: [{ type: "slack_reply", text: "Ana, it is done." }] };
