@@ -1061,6 +1061,31 @@ test(
 );
 
 test(
+  "turns a bot's message that mentions me into a card, not an other message",
+  withStores((store) => {
+    const digest = channelHit({
+      ts: "1795000100.000000",
+      author: { id: "U00", name: "" },
+      isBot: true,
+      text: `<@${ME}|Me>: review back-end #2528`,
+    });
+
+    ingestChannels(store, [digest], { hits: [digest] });
+
+    assert.deepEqual(
+      store
+        .cards()
+        .map((card) => [
+          card.key,
+          card.messages.map((message) => [message.authorName, message.text]),
+        ]),
+      [["C01:1795000100.000000", [["Slack app", `<@${ME}|Me>: review back-end #2528`]]]],
+    );
+    assert.deepEqual(otherTexts(store), []);
+  }),
+);
+
+test(
   "says messages are missing after a sync found more than it loads, until all are marked read or the lookback passes",
   withStores((store) => {
     const backend = channelHit({ ts: "1795000100.000000" });

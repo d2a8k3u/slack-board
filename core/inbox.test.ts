@@ -202,6 +202,23 @@ test("leaves out my own messages and bot messages", () => {
   assert.deepEqual(cards, []);
 });
 
+test("keeps a bot's message only when it mentions me by my own user ID", () => {
+  const cases: [string, boolean][] = [
+    [`<@${ME}> review this`, true],
+    [`<@${ME}|Me Person> review this`, true],
+    [`<@${ME}X> review this`, false],
+  ];
+
+  assert.deepEqual(
+    cases.map(([text]) => [
+      text,
+      mergeHits([], [hit({ author: { id: "U00", name: "" }, isBot: true, text })], ME, NO_IGNORED)
+        .length === 1,
+    ]),
+    cases,
+  );
+});
+
 test("adds new messages to an existing card in time order", () => {
   const existing: InboxCard[] = mergeHits(
     [],

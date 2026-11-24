@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- A bot's message that mentions you, such as a daily digest of pull requests, becomes a card. Until now it landed in Other messages. A bot's `@here`, `@channel` or `@everyone` stays in Other messages.
+
 ## 0.4.1
 
 - A new reply in a thread where you were only mentioned, also by `@here`, `@channel` or `@everyone`, comes to the board while the thread's card is open and for 30 days after you handle it. Until now such replies never showed up; only threads you wrote in brought theirs.
