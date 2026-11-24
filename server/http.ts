@@ -249,6 +249,16 @@ const routesFor = ({ store, projectKeys, polish, notify }: BoardServerOptions): 
     },
     {
       method: "POST",
+      pattern: /^\/api\/cards\/([^/]+)\/retry$/,
+      handle: async ([key = ""]) => {
+        cardExists(key);
+        if (store.card(key)?.canRetry !== true)
+          return refuse(404, "Nothing on this card waits to be tried again");
+        return queued(store.retry(key, new Date()));
+      },
+    },
+    {
+      method: "POST",
       pattern: /^\/api\/cards\/([^/]+)\/act$/,
       handle: async ([key = ""], body) => {
         const text = boundedText(record(await body()).text, "text", MAX_INPUT_CHARS);

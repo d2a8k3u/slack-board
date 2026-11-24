@@ -364,6 +364,25 @@ test("upgrades a database from version 4 so Actions can keep its waiting steps",
   }
 });
 
+test("upgrades a database from version 5 so a failed draft can be tried again", () => {
+  const folder = mkdtempSync(join(tmpdir(), "slack-board-upgrade-v5-"));
+  const path = join(folder, "board.db");
+  const first = new BoardStore(path);
+  ingest(first, [hit({ text: "no ticket" })]);
+  first.close();
+  const old = new DatabaseSync(path);
+  old.exec("ALTER TABLE cards DROP COLUMN retry_request; PRAGMA user_version = 5");
+  old.close();
+  const store = new BoardStore(path);
+  try {
+    failDraft(store, { text: "say it is done" });
+    assert.equal(store.retry("D01", NOW), true);
+  } finally {
+    store.close();
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
 test("upgrades a database from the first version and fetches details for its tickets again", () => {
   const folder = mkdtempSync(join(tmpdir(), "slack-board-upgrade-"));
   const path = join(folder, "board.db");
@@ -571,6 +590,72 @@ test(
     store.finish(run?.id ?? 0, { ok: false, error: "Slack is not connected" }, NOW);
     assert.deepEqual(store.cards()[0]?.proposal, written);
     assert.equal(store.cards()[0]?.error, "Slack is not connected");
+  }),
+);
+
+const OVERLOADED = "Claude did not answer: overloaded (HTTP 529)";
+
+const failDraft = (store: BoardStore, input: { text: string; replyToTs?: string }) => {
+  store.request("propose", "D01", input, NOW);
+  store.finish(store.claim("worker", NOW)?.id ?? 0, { ok: false, error: OVERLOADED }, NOW);
+};
+
+test(
+  "tries a failed draft again with the same note and thread, without the note being written again",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    const note = { text: "say it is done", replyToTs: "1795000000.000100" };
+    failDraft(store, note);
+    assert.equal(store.cards()[0]?.error, OVERLOADED);
+    assert.equal(store.cards()[0]?.canRetry, true);
+
+    assert.equal(store.retry("D01", LATER(1)), true);
+
+    assert.equal(store.cards()[0]?.error, null);
+    assert.equal(store.cards()[0]?.canRetry, false);
+    const again = store.claim("worker", LATER(1));
+    assert.equal(again?.kind, "propose");
+    assert.deepEqual(again?.input, note);
+  }),
+);
+
+test(
+  "tries a failed send again with only the steps that did not run",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    const remaining: Proposal = {
+      summary: "Reply and react",
+      steps: [{ type: "slack_reaction", emoji: "eyes" }],
+    };
+    store.approve(
+      "D01",
+      { ...remaining, steps: [{ type: "slack_reply", text: "Done." }, ...remaining.steps] },
+      NOW,
+    );
+    store.finish(
+      store.claim("worker", NOW)?.id ?? 0,
+      { ok: false, error: "Step 2 of 2 failed, steps 1 to 1 are done: rate_limited", remaining },
+      NOW,
+    );
+
+    assert.equal(store.retry("D01", LATER(1)), true);
+
+    const again = store.claim("worker", LATER(1));
+    assert.equal(again?.kind, "execute");
+    assert.deepEqual(again?.input, { proposal: remaining });
+  }),
+);
+
+test(
+  "leaves nothing to try again once a new draft of the card succeeds",
+  withStores((store) => {
+    ingest(store, [hit({ text: "no ticket" })]);
+    failDraft(store, { text: "say it is done" });
+
+    draftReply(store, "It is done.");
+
+    assert.equal(store.cards()[0]?.canRetry, false);
+    assert.equal(store.retry("D01", LATER(1)), false);
   }),
 );
 
