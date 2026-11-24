@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3
+
+- When Claude's API is rate limited, overloaded or does not respond, a draft, ranking or ticket summary tries twice more, 5 and 15 seconds later. When it still fails, the error names what the API said, such as `Claude did not answer: overloaded (HTTP 529)`, instead of `Claude did not answer (api-error)`.
+- Try again on a failed draft drafts the same note again, in the same thread. On a failed send it sends the steps that did not run. Until now it only moved the cursor to the empty reply box.
+- Messages show without the `> ` that the Slack connector now puts before every line, and a thread no longer shows its reactions as a line of the message. Messages already on the board keep the `> ` until their card is handled.
+
 ## 0.4.2
 
 - A bot's message that mentions you, such as a daily digest of pull requests, becomes a card. Until now it landed in Other messages. A bot's `@here`, `@channel` or `@everyone` stays in Other messages.
