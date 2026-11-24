@@ -1287,6 +1287,13 @@ function discardSteps(key) {
   });
 }
 
+function retryCard(key) {
+  void runAction(scopeOf("retry", key), () => api("POST", `${cardPath(key)}/retry`), {
+    conflictMessage: BUSY_MESSAGE,
+    onSuccess: () => announce(["Trying again"]),
+  });
+}
+
 function discard(key) {
   const card = findCard(key);
   if (card === undefined) return;
@@ -2120,12 +2127,21 @@ function buildDetail(card) {
   refs.conversation = buildConversation(refs);
   refs.tickets = el("div", { class: "tickets" });
   refs.bannerText = el("span", { class: "banner-text" });
+  refs.retryButton = el(
+    "button",
+    {
+      type: "button",
+      class: "banner-button",
+      onclick: (event) => !isDisabled(event.currentTarget) && retryCard(key),
+    },
+    "Try again",
+  );
   refs.banner = el(
     "div",
     { class: "banner", role: "alert", hidden: true },
     icon("alert", 18),
     refs.bannerText,
-    el("button", { type: "button", class: "banner-button", onclick: focusComposer }, "Try again"),
+    refs.retryButton,
   );
   refs.working = el("div", { class: "working", role: "status", hidden: true });
   refs.proposal = el("section", {
@@ -2828,6 +2844,11 @@ function summaryNode(ticket, busy) {
 function updateCardState(refs, card) {
   refs.banner.hidden = card.error === null;
   setText(refs.bannerText, card.error ?? "");
+  refs.retryButton.hidden = !card.canRetry;
+  setDisabled(
+    refs.retryButton,
+    card.pending !== null || requests.inFlight.has(scopeOf("retry", card.key)),
+  );
   const note = memory.notes.get(card.key);
   const working = workingMessage(card, note);
   refs.working.hidden = working === null;

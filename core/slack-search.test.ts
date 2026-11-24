@@ -110,6 +110,28 @@ test("marks a non-DM conversation with participants as a group DM", () => {
   assert.equal(readSearchPage(group).hits[0]?.kind, "group");
 });
 
+test("reads message text without the quote mark the connector puts before every line", () => {
+  const quoted = JSON.stringify({
+    results: block([
+      "### Result 1 of 1",
+      "Channel: #backend (ID: C02)",
+      "From: Bob Kral <bob@example.com> (ID: U_BOB) ",
+      "Message_ts: 1795193952.000002",
+      "Permalink: [link](https://example.slack.com/archives/C02/p1795193952000002)",
+      "Text: ",
+      "> Release plan",
+      "> • API key for <@U_ANA|Ana Novak>",
+      ">",
+      "> &gt; quoted by Bob",
+    ]),
+  });
+
+  assert.equal(
+    readSearchPage(quoted).hits[0]?.text,
+    "Release plan\n• API key for <@U_ANA|Ana Novak>\n\n&gt; quoted by Bob",
+  );
+});
+
 test("has no cursor and no hits on an empty last page", () => {
   assert.deepEqual(
     readSearchPage(JSON.stringify({ results: "# Search Results for: \n\nNo results found." })),

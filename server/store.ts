@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS cards (
   updated_at TEXT NOT NULL,
   priority TEXT,
   priority_reason TEXT,
-  priority_ts TEXT
+  priority_ts TEXT,
+  retry_request TEXT
 );
 CREATE TABLE IF NOT EXISTS ignored (key TEXT PRIMARY KEY, last_ts TEXT NOT NULL, ignored_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS people (channel_id TEXT PRIMARY KEY, label TEXT NOT NULL, kind TEXT NOT NULL, seen_at TEXT NOT NULL);
@@ -119,12 +120,13 @@ CREATE TABLE tickets (
 );
 `;
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const MAX_PEOPLE_RESULTS = 20;
 const MAX_RANKING_BATCH = 20;
 const RANKING_MESSAGES = 5;
 const RANKING_TEXT_CHARS = 600;
 const PRIORITY_COLUMNS = ["priority", "priority_reason", "priority_ts"];
+const RETRY_COLUMNS = ["retry_request"];
 const CONTEXT_COLUMNS = ["action_proposal"];
 const BACKGROUND_KINDS = ["details", "classify"];
 
@@ -142,7 +144,10 @@ type CardRow = {
   priority: Priority | null;
   priority_reason: string | null;
   priority_ts: string | null;
+  retry_request: string | null;
 };
+
+type RetryRequest = { kind: Extract<RequestKind, "propose" | "execute">; input: unknown };
 
 type ContextRow = {
   actions: string | null;
@@ -262,6 +267,9 @@ type Run = { proposal: Proposal; turn?: number };
 
 const runOf = (request: RequestRow): Run => JSON.parse(request.input) as Run;
 
+const retryRequestOf = (kind: RetryRequest["kind"], input: unknown): string =>
+  JSON.stringify({ kind, input } satisfies RetryRequest);
+
 const claudeTurn = (
   text: string,
   now: Date,
@@ -334,7 +342,7 @@ export class BoardStore {
     if (version >= SCHEMA_VERSION) return;
     this.#transaction(() => {
       if (version < 2) this.#rebuildTickets();
-      this.#addMissingColumns("cards", PRIORITY_COLUMNS);
+      this.#addMissingColumns("cards", [...PRIORITY_COLUMNS, ...RETRY_COLUMNS]);
       this.#addMissingColumns("card_context", CONTEXT_COLUMNS);
       if (version < 4) this.#db.exec("UPDATE cards SET priority_ts = NULL WHERE priority IS NULL");
       this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
@@ -513,6 +521,7 @@ export class BoardStore {
         actionProposal: actionProposalOf(row.action_proposal, runningTurns.get(row.key) ?? null),
         pending: open.get(row.key) ?? null,
         error: row.error,
+        canRetry: row.retry_request !== null,
         updatedAt: row.updated_at,
         priority: row.priority,
         priorityReason: row.priority_reason,
@@ -604,7 +613,24 @@ export class BoardStore {
   }
 
   discardProposal(key: string): void {
-    this.#db.prepare("UPDATE cards SET proposal = NULL, error = NULL WHERE key = ?").run(key);
+    this.#db
+      .prepare("UPDATE cards SET proposal = NULL, error = NULL, retry_request = NULL WHERE key = ?")
+      .run(key);
+  }
+
+  retry(key: string, now: Date): boolean {
+    return this.#transaction(() => {
+      const row = this.#db.prepare("SELECT retry_request FROM cards WHERE key = ?").get(key) as
+        | Pick<CardRow, "retry_request">
+        | undefined;
+      if (row === undefined || row.retry_request === null) return false;
+      const { kind, input } = JSON.parse(row.retry_request) as RetryRequest;
+      if (!this.#enqueue(kind, key, input, now)) return false;
+      this.#db
+        .prepare("UPDATE cards SET error = NULL, retry_request = NULL WHERE key = ?")
+        .run(key);
+      return true;
+    });
   }
 
   request(kind: RequestKind, cardKey: string | null, input: unknown, now: Date): boolean {
@@ -638,7 +664,7 @@ export class BoardStore {
     return this.#transaction(() => {
       if (!this.#enqueue("execute", key, { proposal }, now)) return false;
       this.#db
-        .prepare("UPDATE cards SET proposal = ?, error = NULL WHERE key = ?")
+        .prepare("UPDATE cards SET proposal = ?, error = NULL, retry_request = NULL WHERE key = ?")
         .run(shownProposal === null ? null : JSON.stringify(shownProposal), key);
       return true;
     });
@@ -753,12 +779,18 @@ export class BoardStore {
       case "propose":
         if (outcome.ok)
           this.#db
-            .prepare("UPDATE cards SET proposal = ?, error = NULL WHERE key = ?")
+            .prepare(
+              "UPDATE cards SET proposal = ?, error = NULL, retry_request = NULL WHERE key = ?",
+            )
             .run(JSON.stringify(outcome.proposal ?? null), request.card_key);
         else
           this.#db
-            .prepare("UPDATE cards SET error = ? WHERE key = ?")
-            .run(outcome.error, request.card_key);
+            .prepare("UPDATE cards SET error = ?, retry_request = ? WHERE key = ?")
+            .run(
+              outcome.error,
+              retryRequestOf("propose", JSON.parse(request.input)),
+              request.card_key,
+            );
         return;
       case "act":
         this.#applyAnswer(request.card_key ?? "", outcome, now);
@@ -856,12 +888,20 @@ export class BoardStore {
 
   #finishReplyRun(key: string, proposal: Proposal, outcome: FinishOutcome, now: Date): void {
     if (!outcome.ok) {
+      const remaining = outcome.remaining ?? proposal;
       this.#db
-        .prepare("UPDATE cards SET error = ?, proposal = ? WHERE key = ?")
-        .run(outcome.error, JSON.stringify(outcome.remaining ?? proposal), key);
+        .prepare("UPDATE cards SET error = ?, proposal = ?, retry_request = ? WHERE key = ?")
+        .run(
+          outcome.error,
+          JSON.stringify(remaining),
+          retryRequestOf("execute", { proposal: remaining }),
+          key,
+        );
       return;
     }
-    this.#db.prepare("UPDATE cards SET proposal = NULL, error = NULL WHERE key = ?").run(key);
+    this.#db
+      .prepare("UPDATE cards SET proposal = NULL, error = NULL, retry_request = NULL WHERE key = ?")
+      .run(key);
     this.#appendTurn(key, doneTurn(proposal, now));
   }
 

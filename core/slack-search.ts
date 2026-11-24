@@ -1,3 +1,4 @@
+import { withoutConnectorQuote } from "./connector-quote.ts";
 import type { ConversationKind, Person, Recipient, SearchPage, SlackHit } from "./types.ts";
 
 type RawPage = { results: string; pagination_info?: string };
@@ -58,10 +59,12 @@ const permalinkOf = (block: string): string => {
 const textOf = (block: string): string => {
   const start = TEXT_START.exec(block);
   if (start === null) return "";
-  return block
-    .slice(start.index + start[0].length)
-    .replace(BLOCK_END, "")
-    .trim();
+  return withoutConnectorQuote(
+    block
+      .slice(start.index + start[0].length)
+      .replace(BLOCK_END, "")
+      .trim(),
+  );
 };
 
 const parseHit = (block: string): SlackHit => {

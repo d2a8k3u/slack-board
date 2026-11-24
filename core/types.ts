@@ -178,6 +178,7 @@ export type BoardCard = {
   actionProposal: ActionProposal | null;
   pending: { kind: RequestKind; status: RequestStatus } | null;
   error: string | null;
+  canRetry: boolean;
   updatedAt: string;
   priority: Priority | null;
   priorityReason: string | null;
